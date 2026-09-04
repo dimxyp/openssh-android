@@ -17,36 +17,52 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenu
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.androssh.app.data.AuthMethod
 import com.androssh.app.data.HostProfile
+import com.androssh.app.ui.backup.BackupScreen
+import com.androssh.app.ui.sftp.SftpScreen
+import com.androssh.app.ui.terminal.EditAction
+import com.androssh.app.ui.terminal.ExtraKeysBar
 import com.androssh.app.viewmodel.AndroSshViewModel
+import com.androssh.app.viewmodel.BackupViewModel
 import com.androssh.app.viewmodel.ConnectionFormState
 import com.androssh.app.viewmodel.Screen
+import com.androssh.app.viewmodel.SftpViewModel
 import com.androssh.app.viewmodel.TerminalState
 
 @Composable
-fun AndroSshApp(viewModel: AndroSshViewModel) {
+fun AndroSshApp(
+    viewModel: AndroSshViewModel,
+    sftpViewModel: SftpViewModel,
+    backupViewModel: BackupViewModel,
+) {
     val uiState by viewModel.uiState.collectAsState()
     val profiles by viewModel.profiles.collectAsState()
 
@@ -59,7 +75,15 @@ fun AndroSshApp(viewModel: AndroSshViewModel) {
                         .padding(16.dp)
                         .fillMaxSize(),
                 ) {
-                    Text(text = "AndroSSH", style = MaterialTheme.typography.headlineMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(text = "AndroSSH", style = MaterialTheme.typography.headlineMedium)
+                        if (uiState.screen == Screen.ConnectionList) {
+                            TextButton(onClick = viewModel::openBackup) { Text("Backup") }
+                        }
+                    }
                     uiState.message?.let {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(text = it, style = MaterialTheme.typography.bodyMedium)
@@ -72,6 +96,7 @@ fun AndroSshApp(viewModel: AndroSshViewModel) {
                             onEdit = viewModel::openEditProfileForm,
                             onDelete = viewModel::deleteProfile,
                             onConnect = viewModel::connect,
+                            onOpenSftp = viewModel::openSftp,
                         )
 
                         Screen.EditConnection -> EditConnectionScreen(
@@ -87,6 +112,16 @@ fun AndroSshApp(viewModel: AndroSshViewModel) {
                             onBack = viewModel::showConnectionList,
                             onSend = viewModel::sendTerminalInput,
                         )
+
+                        Screen.Sftp -> {
+                            val profile = uiState.selectedProfile
+                            LaunchedEffect(profile?.id) {
+                                profile?.let { sftpViewModel.connect(it, viewModel.getPasswordFor(it)) }
+                            }
+                            SftpScreen(viewModel = sftpViewModel, onBack = viewModel::showConnectionList)
+                        }
+
+                        Screen.Backup -> BackupScreen(viewModel = backupViewModel, onBack = viewModel::showConnectionList)
                     }
                 }
             }
@@ -101,6 +136,7 @@ private fun ConnectionListScreen(
     onEdit: (HostProfile) -> Unit,
     onDelete: (HostProfile) -> Unit,
     onConnect: (HostProfile) -> Unit,
+    onOpenSftp: (HostProfile) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Button(onClick = onAdd) { Text("Add connection") }
@@ -120,6 +156,7 @@ private fun ConnectionListScreen(
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(onClick = { onConnect(profile) }) { Text("Connect") }
                                 OutlinedButton(onClick = { onEdit(profile) }) { Text("Edit") }
+                                OutlinedButton(onClick = { onOpenSftp(profile) }) { Text("SFTP") }
                                 TextButton(onClick = { onDelete(profile) }) { Text("Delete") }
                             }
                         }
@@ -228,7 +265,16 @@ private fun TerminalScreen(
     onBack: () -> Unit,
     onSend: (String) -> Unit,
 ) {
-    var input by remember { mutableStateOf("") }
+    var input by remember { mutableStateOf(TextFieldValue()) }
+    val undoStack = remember { mutableStateListOf<TextFieldValue>() }
+    val redoStack = remember { mutableStateListOf<TextFieldValue>() }
+    val clipboardManager = LocalClipboardManager.current
+
+    fun pushUndo(previous: TextFieldValue) {
+        undoStack.add(previous)
+        redoStack.clear()
+    }
+
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -243,16 +289,73 @@ private fun TerminalScreen(
                 .weight(1f),
             label = { Text("Session output") },
         )
+        ExtraKeysBar(
+            onSendKey = { sequence -> onSend(sequence) },
+            onEditAction = { action ->
+                when (action) {
+                    EditAction.SelectAll -> {
+                        input = input.copy(selection = TextRange(0, input.text.length))
+                    }
+
+                    EditAction.Copy -> {
+                        val selected = input.getSelectedText()
+                        val toCopy = if (selected.isNotEmpty()) selected else AnnotatedString(input.text)
+                        clipboardManager.setText(toCopy)
+                    }
+
+                    EditAction.Cut -> {
+                        val selected = input.getSelectedText()
+                        if (selected.isNotEmpty()) {
+                            clipboardManager.setText(selected)
+                            pushUndo(input)
+                            val range = input.selection
+                            val newText = input.text.removeRange(range.min, range.max)
+                            input = TextFieldValue(newText, selection = TextRange(range.min))
+                        }
+                    }
+
+                    EditAction.Paste -> {
+                        val clip = clipboardManager.getText()?.text.orEmpty()
+                        if (clip.isNotEmpty()) {
+                            pushUndo(input)
+                            val range = input.selection
+                            val newText = input.text.replaceRange(range.min, range.max, clip)
+                            val cursor = range.min + clip.length
+                            input = TextFieldValue(newText, selection = TextRange(cursor))
+                        }
+                    }
+
+                    EditAction.Undo -> {
+                        undoStack.removeLastOrNull()?.let { previous ->
+                            redoStack.add(input)
+                            input = previous
+                        }
+                    }
+
+                    EditAction.Redo -> {
+                        redoStack.removeLastOrNull()?.let { next ->
+                            undoStack.add(input)
+                            input = next
+                        }
+                    }
+                }
+            },
+        )
         OutlinedTextField(
             value = input,
-            onValueChange = { input = it },
+            onValueChange = { newValue ->
+                if (newValue.text != input.text) pushUndo(input)
+                input = newValue
+            },
             label = { Text("Input") },
             modifier = Modifier.fillMaxWidth(),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
-                onSend(input + "\n")
-                input = ""
+                onSend(input.text + "\n")
+                input = TextFieldValue()
+                undoStack.clear()
+                redoStack.clear()
             }) { Text("Send") }
             OutlinedButton(onClick = onBack) { Text("Disconnect") }
         }

@@ -12,6 +12,7 @@ data class HostProfileEntity(
     val username: String,
     val authMethod: AuthMethod = AuthMethod.Password,
     val privateKeyAlias: String? = null,
+    val updatedAt: Long = 0L,
 )
 
 data class HostProfile(
@@ -23,6 +24,7 @@ data class HostProfile(
     val authMethod: AuthMethod = AuthMethod.Password,
     val privateKeyAlias: String? = null,
     val hasSavedPassword: Boolean = false,
+    val updatedAt: Long = 0L,
 )
 
 fun HostProfileEntity.toModel(hasSavedPassword: Boolean) = HostProfile(
@@ -34,6 +36,7 @@ fun HostProfileEntity.toModel(hasSavedPassword: Boolean) = HostProfile(
     authMethod = authMethod,
     privateKeyAlias = privateKeyAlias,
     hasSavedPassword = hasSavedPassword,
+    updatedAt = updatedAt,
 )
 
 fun HostProfile.toEntity() = HostProfileEntity(
@@ -44,4 +47,5 @@ fun HostProfile.toEntity() = HostProfileEntity(
     username = username,
     authMethod = authMethod,
     privateKeyAlias = privateKeyAlias,
+    updatedAt = updatedAt,
 )
