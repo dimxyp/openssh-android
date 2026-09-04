@@ -22,14 +22,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import com.androssh.app.viewmodel.SftpViewModel
-import kotlinx.coroutines.launch
 
 /**
  * Dual-pane SFTP browser: the left pane lists the local device tree picked
@@ -47,7 +45,6 @@ fun SftpScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     var localFolder by remember { mutableStateOf<DocumentFile?>(null) }
     var localEntries by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
@@ -124,11 +121,9 @@ fun SftpScreen(
                                 Text(doc.name.orEmpty() + if (doc.isDirectory) "/" else "")
                                 if (!doc.isDirectory) {
                                     OutlinedButton(onClick = {
-                                        scope.launch {
-                                            viewModel.upload(doc.name ?: "upload.bin", doc.length()) {
-                                                context.contentResolver.openInputStream(doc.uri)
-                                                    ?: error("Unable to open file")
-                                            }
+                                        viewModel.upload(doc.name ?: "upload.bin", doc.length()) {
+                                            context.contentResolver.openInputStream(doc.uri)
+                                                ?: error("Unable to open file")
                                         }
                                     }) { Text("Upload") }
                                 }

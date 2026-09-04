@@ -1,5 +1,6 @@
 package com.androssh.app.data.backup
 
+import android.os.Build
 import com.androssh.app.data.AuthMethod
 import com.androssh.app.data.ConnectionRepository
 import com.androssh.app.data.HostProfile
@@ -42,11 +43,15 @@ data class ImportPlan(
  * Handles encrypted export/import of saved connection profiles.
  *
  * Export file format: a small binary header (magic bytes, format version,
- * PBKDF2 salt, AES-GCM IV) followed by an AES-256-GCM encrypted UTF-8 JSON
- * payload derived from a user-supplied passphrase (PBKDF2WithHmacSHA1, per
- * Android API 24 compatibility). The JSON document - which may contain saved
- * passwords - only ever exists in memory; the file written to disk is always
- * ciphertext, never plaintext credentials.
+ * a one-byte key-derivation-function id, PBKDF2 salt, AES-GCM IV) followed
+ * by an AES-256-GCM encrypted UTF-8 JSON payload derived from a
+ * user-supplied passphrase. The KDF id lets newer devices (API 26+) use the
+ * stronger PBKDF2WithHmacSHA256 while still allowing this app's minSdk 24
+ * devices to fall back to PBKDF2WithHmacSHA1; the id is recorded per-file so
+ * an export produced on one device can always be decrypted correctly on
+ * another. The JSON document - which may contain saved passwords - only
+ * ever exists in memory; the file written to disk is always ciphertext,
+ * never plaintext credentials.
  */
 class BackupManager(
     private val repository: ConnectionRepository,
@@ -73,13 +78,15 @@ class BackupManager(
         val plaintext = json.toString().toByteArray(Charsets.UTF_8)
         val salt = ByteArray(SALT_SIZE_BYTES).also(SECURE_RANDOM::nextBytes)
         val iv = ByteArray(IV_SIZE_BYTES).also(SECURE_RANDOM::nextBytes)
-        val key = deriveKey(passphrase, salt)
+        val kdfAlgorithm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) KDF_SHA256 else KDF_SHA1
+        val key = deriveKey(kdfAlgorithm, passphrase, salt)
         val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
         val ciphertext = cipher.doFinal(plaintext)
 
         output.write(MAGIC)
         output.write(byteArrayOf(FORMAT_VERSION.toByte()))
+        output.write(byteArrayOf(kdfAlgorithm))
         output.write(salt)
         output.write(iv)
         output.write(ciphertext)
@@ -124,9 +131,16 @@ class BackupManager(
         }
     }
 
+    /**
+     * Reads the whole (typically small, since it is a list of connection
+     * profiles) encrypted file into memory before decrypting. If backup
+     * files are ever expected to grow very large, this could be replaced by
+     * reading just the fixed-size header first and then decrypting the
+     * remainder as a stream via `CipherInputStream`.
+     */
     private fun decrypt(passphrase: CharArray, input: InputStream): List<ExportedProfile> {
         val bytes = input.readBytes()
-        val headerSize = MAGIC.size + 1 + SALT_SIZE_BYTES + IV_SIZE_BYTES
+        val headerSize = MAGIC.size + 1 + 1 + SALT_SIZE_BYTES + IV_SIZE_BYTES
         require(bytes.size > headerSize) { "File is too small to be a valid AndroSSH backup." }
 
         var offset = 0
@@ -138,13 +152,16 @@ class BackupManager(
         offset += 1
         require(version == FORMAT_VERSION) { "Unsupported backup format version $version." }
 
+        val kdfAlgorithm = bytes[offset]
+        offset += 1
+
         val salt = bytes.copyOfRange(offset, offset + SALT_SIZE_BYTES)
         offset += SALT_SIZE_BYTES
         val iv = bytes.copyOfRange(offset, offset + IV_SIZE_BYTES)
         offset += IV_SIZE_BYTES
         val ciphertext = bytes.copyOfRange(offset, bytes.size)
 
-        val key = deriveKey(passphrase, salt)
+        val key = deriveKey(kdfAlgorithm, passphrase, salt)
         val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
         val plaintext = try {
@@ -169,10 +186,26 @@ class BackupManager(
         }
     }
 
-    private fun deriveKey(passphrase: CharArray, salt: ByteArray): SecretKeySpec {
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1")
+    /**
+     * Derives the AES key from [passphrase]/[salt] using the PBKDF2 variant
+     * identified by [kdfAlgorithm] ([KDF_SHA1] or [KDF_SHA256]). Exports
+     * record which variant was used so a file can always be decrypted
+     * regardless of which device (and Android version) it was later opened
+     * on.
+     */
+    private fun deriveKey(kdfAlgorithm: Byte, passphrase: CharArray, salt: ByteArray): SecretKeySpec {
+        val algorithmName = when (kdfAlgorithm) {
+            KDF_SHA256 -> "PBKDF2WithHmacSHA256"
+            KDF_SHA1 -> "PBKDF2WithHmacSHA1"
+            else -> throw IllegalArgumentException("Unsupported key-derivation algorithm id $kdfAlgorithm.")
+        }
+        val factory = SecretKeyFactory.getInstance(algorithmName)
         val spec = PBEKeySpec(passphrase, salt, PBKDF2_ITERATIONS, KEY_SIZE_BITS)
-        val keyBytes = factory.generateSecret(spec).encoded
+        val keyBytes = try {
+            factory.generateSecret(spec).encoded
+        } finally {
+            spec.clearPassword()
+        }
         return SecretKeySpec(keyBytes, "AES")
     }
 
@@ -190,6 +223,8 @@ class BackupManager(
     private companion object {
         val MAGIC = byteArrayOf('A'.code.toByte(), 'S'.code.toByte(), 'B'.code.toByte(), 'K'.code.toByte())
         const val FORMAT_VERSION = 1
+        const val KDF_SHA1: Byte = 1
+        const val KDF_SHA256: Byte = 2
         const val SALT_SIZE_BYTES = 16
         const val IV_SIZE_BYTES = 12
         const val KEY_SIZE_BITS = 256
