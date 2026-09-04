@@ -229,7 +229,10 @@ private fun TerminalScreen(
     onSend: (String) -> Unit,
 ) {
     var input by remember { mutableStateOf("") }
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         Text(profile?.let { "${it.username}@${it.host}" } ?: "Terminal")
         TextField(
             value = terminal.lines.joinToString(separator = ""),

@@ -20,6 +20,7 @@ import net.schmizz.sshj.connection.channel.direct.Session
 class SshConnectionManager(
     private val knownHostsFile: File,
 ) {
+    private val knownHostsLock = Any()
     suspend fun openShell(
         profile: HostProfile,
         password: String?,
@@ -28,7 +29,7 @@ class SshConnectionManager(
         require(!password.isNullOrEmpty()) { "A saved password is required to connect." }
 
         val client = SSHClient()
-        client.addHostKeyVerifier(AppKnownHostsVerifier(knownHostsFile))
+        client.addHostKeyVerifier(AppKnownHostsVerifier(knownHostsFile, knownHostsLock))
         client.connect(profile.host, profile.port)
         client.authPassword(profile.username, password)
         val session = client.startSession()
@@ -40,8 +41,9 @@ class SshConnectionManager(
 
 private class AppKnownHostsVerifier(
     private val knownHostsFile: File,
+    private val lock: Any,
 ) : HostKeyVerifier {
-    override fun verify(hostname: String, port: Int, key: PublicKey): Boolean = synchronized(this) {
+    override fun verify(hostname: String, port: Int, key: PublicKey): Boolean = synchronized(lock) {
         ensureKnownHostsFile()
 
         val hostId = "$hostname:$port"
@@ -60,7 +62,7 @@ private class AppKnownHostsVerifier(
         }
     }
 
-    override fun findExistingAlgorithms(hostname: String, port: Int): List<String> = synchronized(this) {
+    override fun findExistingAlgorithms(hostname: String, port: Int): List<String> = synchronized(lock) {
         ensureKnownHostsFile()
         val hostId = "$hostname:$port"
         knownHostsFile.readLines()
