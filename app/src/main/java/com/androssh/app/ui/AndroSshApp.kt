@@ -257,6 +257,13 @@ private fun EditConnectionScreen(
     }
 }
 
+/** Returns the currently selected text of this [TextFieldValue], or an empty [AnnotatedString] if there is no selection. */
+private fun TextFieldValue.selectedText(): AnnotatedString {
+    val range = selection
+    if (range.collapsed) return AnnotatedString("")
+    return AnnotatedString(text.substring(range.min, range.max))
+}
+
 @Composable
 private fun TerminalScreen(
     profile: HostProfile?,
@@ -297,14 +304,14 @@ private fun TerminalScreen(
                     }
 
                     EditAction.Copy -> {
-                        val selected = input.getSelectedText()
-                        val toCopy = if (selected.isNotEmpty()) selected else AnnotatedString(input.text)
+                        val selected = input.selectedText()
+                        val toCopy = if (selected.text.isNotEmpty()) selected else AnnotatedString(input.text)
                         clipboardManager.setText(toCopy)
                     }
 
                     EditAction.Cut -> {
-                        val selected = input.getSelectedText()
-                        if (selected.isNotEmpty()) {
+                        val selected = input.selectedText()
+                        if (selected.text.isNotEmpty()) {
                             clipboardManager.setText(selected)
                             pushUndo(input)
                             val range = input.selection
