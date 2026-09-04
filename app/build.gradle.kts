@@ -71,4 +71,5 @@ dependencies {
     implementation(libs.sshj)
     implementation(libs.slf4j.nop)
     ksp(libs.androidx.room.compiler)
+    testImplementation(libs.junit)
 }

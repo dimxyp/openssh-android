@@ -1,6 +1,10 @@
 package com.androssh.app.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,9 +12,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -26,7 +33,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -36,9 +42,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
@@ -49,6 +62,7 @@ import com.androssh.app.ui.backup.BackupScreen
 import com.androssh.app.ui.sftp.SftpScreen
 import com.androssh.app.ui.terminal.EditAction
 import com.androssh.app.ui.terminal.ExtraKeysBar
+import com.androssh.app.ui.terminal.TerminalGrid
 import com.androssh.app.viewmodel.AndroSshViewModel
 import com.androssh.app.viewmodel.BackupViewModel
 import com.androssh.app.viewmodel.ConnectionFormState
@@ -275,10 +289,37 @@ private fun TerminalScreen(
     val undoStack = remember { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
     val clipboardManager = LocalClipboardManager.current
+    val focusRequester = remember { FocusRequester() }
+
+    // Focus the hidden input capture as soon as the terminal is shown so the on-screen keyboard
+    // comes up without requiring the user to first tap something.
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
     fun pushUndo(previous: TextFieldValue) {
         undoStack.add(previous)
         redoStack.clear()
+    }
+
+    /**
+     * Applies [newValue] as the new hidden-input-buffer state and streams whatever changed
+     * straight to the shell channel, so ordinary typing/backspace/paste never needs an explicit
+     * "Send" action. Appends/trailing-deletes are streamed char-by-char; anything else (e.g. a
+     * paste replacing a mid-line selection) falls back to backspacing the old text and retyping
+     * the new text, which stays correct even though it isn't the most minimal byte sequence.
+     */
+    fun applyInput(newValue: TextFieldValue) {
+        val oldText = input.text
+        val newText = newValue.text
+        when {
+            newText == oldText -> Unit
+            newText.startsWith(oldText) -> onSend(newText.substring(oldText.length))
+            oldText.startsWith(newText) -> onSend("\b".repeat(oldText.length - newText.length))
+            else -> {
+                onSend("\b".repeat(oldText.length))
+                onSend(newText)
+            }
+        }
+        input = newValue
     }
 
     Column(
@@ -286,15 +327,18 @@ private fun TerminalScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(profile?.let { "${it.username}@${it.host}" } ?: "Terminal")
-        TextField(
-            value = terminal.lines.joinToString(separator = ""),
-            onValueChange = {},
-            readOnly = true,
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
-            label = { Text("Session output") },
-        )
+                .weight(1f)
+                .background(Color.Black)
+                .clickable { focusRequester.requestFocus() }
+                .verticalScroll(rememberScrollState())
+                .horizontalScroll(rememberScrollState())
+                .padding(4.dp),
+        ) {
+            TerminalGrid(snapshot = terminal.snapshot)
+        }
         ExtraKeysBar(
             onSendKey = { sequence -> onSend(sequence) },
             onEditAction = { action ->
@@ -316,7 +360,7 @@ private fun TerminalScreen(
                             pushUndo(input)
                             val range = input.selection
                             val newText = input.text.removeRange(range.min, range.max)
-                            input = TextFieldValue(newText, selection = TextRange(range.min))
+                            applyInput(TextFieldValue(newText, selection = TextRange(range.min)))
                         }
                     }
 
@@ -327,43 +371,50 @@ private fun TerminalScreen(
                             val range = input.selection
                             val newText = input.text.replaceRange(range.min, range.max, clip)
                             val cursor = range.min + clip.length
-                            input = TextFieldValue(newText, selection = TextRange(cursor))
+                            applyInput(TextFieldValue(newText, selection = TextRange(cursor)))
                         }
                     }
 
                     EditAction.Undo -> {
                         undoStack.removeLastOrNull()?.let { previous ->
                             redoStack.add(input)
-                            input = previous
+                            applyInput(previous)
                         }
                     }
 
                     EditAction.Redo -> {
                         redoStack.removeLastOrNull()?.let { next ->
                             undoStack.add(input)
-                            input = next
+                            applyInput(next)
                         }
                     }
                 }
             },
         )
-        OutlinedTextField(
+        // Hidden/invisible input capture: this is the only text field in the terminal screen. It
+        // has no visible presence (1dp, fully transparent) - its sole purpose is to receive the
+        // on-screen keyboard's input events so regular typing can be streamed live (see
+        // [applyInput]) instead of requiring a separate visible "command line" + Send button.
+        BasicTextField(
             value = input,
             onValueChange = { newValue ->
                 if (newValue.text != input.text) pushUndo(input)
-                input = newValue
+                applyInput(newValue)
             },
-            label = { Text("Input") },
-            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(
+                onSend = {
+                    onSend("\r")
+                    pushUndo(input)
+                    applyInput(TextFieldValue())
+                },
+            ),
+            modifier = Modifier
+                .focusRequester(focusRequester)
+                .size(1.dp)
+                .alpha(0f)
+                .semantics { contentDescription = "Terminal keyboard input" },
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                onSend(input.text + "\n")
-                input = TextFieldValue()
-                undoStack.clear()
-                redoStack.clear()
-            }) { Text("Send") }
-            OutlinedButton(onClick = onBack) { Text("Disconnect") }
-        }
+        OutlinedButton(onClick = onBack) { Text("Disconnect") }
     }
 }
