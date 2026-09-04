@@ -102,7 +102,7 @@ class AndroSshViewModel(
     }
 
     fun sendTerminalInput(input: String) {
-        if (input.isBlank()) return
+        if (input.isEmpty()) return
         val session = activeSession
         viewModelScope.launch {
             runCatching { session?.sendInput(input) }
