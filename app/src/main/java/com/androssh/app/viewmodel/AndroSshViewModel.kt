@@ -104,7 +104,6 @@ class AndroSshViewModel(
     fun sendTerminalInput(input: String) {
         if (input.isBlank()) return
         val session = activeSession
-        appendTerminalText(input)
         viewModelScope.launch {
             runCatching { session?.sendInput(input) }
                 .onFailure { appendTerminalLine("Send failed: ${it.message ?: it::class.simpleName}") }
