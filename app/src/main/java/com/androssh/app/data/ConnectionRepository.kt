@@ -11,12 +11,21 @@ class ConnectionRepository(
         profiles.map { profile -> profile.toModel(credentialStore.hasPassword(profile.id)) }
     }
 
+    suspend fun getAllProfiles(): List<HostProfile> = dao.getAllProfiles().map { profile ->
+        profile.toModel(credentialStore.hasPassword(profile.id))
+    }
+
     suspend fun getProfile(id: Long): HostProfile? = dao.getProfile(id)?.let { profile ->
         profile.toModel(credentialStore.hasPassword(profile.id))
     }
 
+    suspend fun findByHostUsernamePort(host: String, username: String, port: Int): HostProfile? =
+        dao.findByHostUsernamePort(host, username, port)?.let { profile ->
+            profile.toModel(credentialStore.hasPassword(profile.id))
+        }
+
     suspend fun saveProfile(profile: HostProfile, password: String?): Long {
-        val savedId = dao.upsert(profile.toEntity())
+        val savedId = dao.upsert(profile.toEntity().copy(updatedAt = System.currentTimeMillis()))
         if (profile.authMethod == AuthMethod.Password && !password.isNullOrBlank()) {
             credentialStore.savePassword(savedId, password)
         }

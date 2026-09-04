@@ -41,6 +41,14 @@ class AndroSshViewModel(
         )
     }
 
+    fun openSftp(profile: HostProfile) {
+        _uiState.value = AndroSshUiState(screen = Screen.Sftp, selectedProfile = profile)
+    }
+
+    fun openBackup() {
+        _uiState.value = AndroSshUiState(screen = Screen.Backup)
+    }
+
     fun showConnectionList() {
         closeSession()
         _uiState.value = AndroSshUiState(screen = Screen.ConnectionList)
@@ -101,6 +109,16 @@ class AndroSshViewModel(
         }
     }
 
+    /** Connects directly to a saved profile by id, e.g. when launched from the home-screen widget. */
+    fun connectByProfileId(profileId: Long) {
+        viewModelScope.launch {
+            repository.getProfile(profileId)?.let { profile -> connect(profile) }
+        }
+    }
+
+    /** Looks up the saved password for a profile, e.g. to hand off to the SFTP view model. */
+    fun getPasswordFor(profile: HostProfile): String? = repository.getPassword(profile.id)
+
     fun sendTerminalInput(input: String) {
         if (input.isEmpty()) return
         val session = activeSession
@@ -158,6 +176,8 @@ enum class Screen {
     ConnectionList,
     EditConnection,
     Terminal,
+    Sftp,
+    Backup,
 }
 
 data class ConnectionFormState(

@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.KeyType
+import net.schmizz.sshj.sftp.SFTPClient
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.connection.channel.direct.Session
 
@@ -21,10 +22,28 @@ class SshConnectionManager(
     private val knownHostsFile: File,
 ) {
     private val knownHostsLock = Any()
+
     suspend fun openShell(
         profile: HostProfile,
         password: String?,
     ): ActiveSshSession = withContext(Dispatchers.IO) {
+        val client = connectAndAuthenticate(profile, password)
+        val session = client.startSession()
+        session.allocateDefaultPTY()
+        val shell = session.startShell()
+        ActiveSshSession(client, session, shell)
+    }
+
+    /** Opens a dedicated connection for SFTP file-transfer operations. */
+    suspend fun openSftp(
+        profile: HostProfile,
+        password: String?,
+    ): SftpSession = withContext(Dispatchers.IO) {
+        val client = connectAndAuthenticate(profile, password)
+        SftpSession(client, client.newSFTPClient())
+    }
+
+    private fun connectAndAuthenticate(profile: HostProfile, password: String?): SSHClient {
         require(profile.authMethod == AuthMethod.Password) { "Private key authentication is not implemented yet." }
         require(!password.isNullOrEmpty()) { "A saved password is required to connect." }
 
@@ -32,10 +51,7 @@ class SshConnectionManager(
         client.addHostKeyVerifier(AppKnownHostsVerifier(knownHostsFile, knownHostsLock))
         client.connect(profile.host, profile.port)
         client.authPassword(profile.username, password)
-        val session = client.startSession()
-        session.allocateDefaultPTY()
-        val shell = session.startShell()
-        ActiveSshSession(client, session, shell)
+        return client
     }
 }
 
@@ -108,5 +124,21 @@ class ActiveSshSession internal constructor(
 
     private companion object {
         const val SHELL_READ_BUFFER_SIZE = 4096
+    }
+}
+
+/**
+ * A live SSH connection dedicated to SFTP operations. Owns both the
+ * underlying [SSHClient] and the [SFTPClient] built on top of it so both can
+ * be torn down together via [close].
+ */
+class SftpSession internal constructor(
+    private val client: SSHClient,
+    val sftpClient: SFTPClient,
+) : Closeable {
+    override fun close() {
+        runCatching { sftpClient.close() }
+        runCatching { client.disconnect() }
+        runCatching { client.close() }
     }
 }
