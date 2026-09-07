@@ -8,13 +8,18 @@ import com.androssh.app.data.ConnectionRepository
 import com.androssh.app.data.HostProfile
 import com.androssh.app.ssh.ActiveSshSession
 import com.androssh.app.ssh.SshConnectionManager
+import com.androssh.app.terminal.TerminalEmulator
+import com.androssh.app.terminal.TerminalSnapshot
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class AndroSshViewModel(
@@ -29,6 +34,16 @@ class AndroSshViewModel(
 
     private var activeSession: ActiveSshSession? = null
     private var outputJob: Job? = null
+    private var renderJob: Job? = null
+
+    /**
+     * Parses incoming shell bytes into a screen buffer. Every byte the shell writes is fed into
+     * this emulator; the resulting [TerminalSnapshot] is what the Compose UI renders. Snapshots
+     * are only published to [uiState] on a throttled interval (see [startRenderLoop]) so bursts
+     * of output (e.g. `top` redrawing) don't trigger a recomposition per byte.
+     */
+    private val terminalEmulator = TerminalEmulator(rows = TERMINAL_ROWS, cols = TERMINAL_COLS)
+    private val terminalDirty = AtomicBoolean(false)
 
     fun openNewProfileForm() {
         _uiState.value = AndroSshUiState(screen = Screen.EditConnection, form = ConnectionFormState())
@@ -91,20 +106,22 @@ class AndroSshViewModel(
 
     fun connect(profile: HostProfile) {
         closeSession()
+        terminalEmulator.reset()
         _uiState.value = AndroSshUiState(
             screen = Screen.Terminal,
             selectedProfile = profile,
-            terminal = TerminalState(lines = listOf("Connecting to ${profile.username}@${profile.host}:${profile.port}...")),
         )
+        feedTerminal("Connecting to ${profile.username}@${profile.host}:${profile.port}...\r\n")
+        startRenderLoop()
         viewModelScope.launch {
             runCatching {
                 sshConnectionManager.openShell(profile, repository.getPassword(profile.id))
             }.onSuccess { session ->
                 activeSession = session
-                appendTerminalLine("Connected. Basic shell stream is active.")
-                outputJob = session.readOutput(viewModelScope) { output -> appendTerminalText(output) }
+                feedTerminal("Connected.\r\n")
+                outputJob = session.readOutput(viewModelScope) { output -> feedTerminal(output) }
             }.onFailure { error ->
-                appendTerminalLine("Connection failed: ${error.message ?: error::class.simpleName}")
+                feedTerminal("Connection failed: ${error.message ?: error::class.simpleName}\r\n")
             }
         }
     }
@@ -119,26 +136,47 @@ class AndroSshViewModel(
     /** Looks up the saved password for a profile, e.g. to hand off to the SFTP view model. */
     fun getPasswordFor(profile: HostProfile): String? = repository.getPassword(profile.id)
 
+    /** Sends raw input straight to the shell channel, e.g. live keystrokes or [com.androssh.app.ui.terminal.ExtraKeysBar] sequences. */
     fun sendTerminalInput(input: String) {
         if (input.isEmpty()) return
         val session = activeSession
         viewModelScope.launch {
             runCatching { session?.sendInput(input) }
-                .onFailure { appendTerminalLine("Send failed: ${it.message ?: it::class.simpleName}") }
+                .onFailure { feedTerminal("Send failed: ${it.message ?: it::class.simpleName}\r\n") }
         }
     }
 
-    private fun appendTerminalLine(line: String) {
-        appendTerminalText("\n$line\n")
+    private fun feedTerminal(text: String) {
+        terminalEmulator.feed(text)
+        terminalDirty.set(true)
     }
 
-    private fun appendTerminalText(text: String) {
-        _uiState.update { state ->
-            state.copy(terminal = state.terminal.copy(lines = state.terminal.lines + text))
+    /**
+     * Publishes [terminalEmulator]'s snapshot to [uiState] at most every [TERMINAL_RENDER_INTERVAL_MS]
+     * while there is unpublished output, instead of once per incoming chunk. This keeps Compose
+     * recomposition work bounded even when the remote shell streams output very quickly (e.g. `top`
+     * or `cat` on a large file).
+     */
+    private fun startRenderLoop() {
+        renderJob?.cancel()
+        publishTerminalSnapshot()
+        renderJob = viewModelScope.launch {
+            while (isActive) {
+                delay(TERMINAL_RENDER_INTERVAL_MS)
+                if (terminalDirty.compareAndSet(true, false)) {
+                    publishTerminalSnapshot()
+                }
+            }
         }
+    }
+
+    private fun publishTerminalSnapshot() {
+        _uiState.update { it.copy(terminal = TerminalState(snapshot = terminalEmulator.snapshot())) }
     }
 
     private fun closeSession() {
+        renderJob?.cancel()
+        renderJob = null
         outputJob?.cancel()
         outputJob = null
         activeSession?.close()
@@ -148,6 +186,12 @@ class AndroSshViewModel(
     override fun onCleared() {
         closeSession()
         super.onCleared()
+    }
+
+    private companion object {
+        const val TERMINAL_ROWS = 30
+        const val TERMINAL_COLS = 100
+        const val TERMINAL_RENDER_INTERVAL_MS = 50L
     }
 }
 
@@ -204,6 +248,5 @@ data class ConnectionFormState(
 }
 
 data class TerminalState(
-    val lines: List<String> = emptyList(),
-    val pendingInput: String = "",
+    val snapshot: TerminalSnapshot = TerminalSnapshot(rows = emptyList(), cursorRow = 0, cursorCol = 0),
 )

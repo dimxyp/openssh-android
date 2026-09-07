@@ -6,6 +6,7 @@ import java.io.Closeable
 import java.io.File
 import android.util.Base64
 import java.security.PublicKey
+import java.security.Security
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -14,14 +15,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.KeyType
+import net.schmizz.sshj.common.SecurityUtils
 import net.schmizz.sshj.sftp.SFTPClient
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.connection.channel.direct.Session
+import org.bouncycastle.jce.provider.BouncyCastleProvider
 
 class SshConnectionManager(
     private val knownHostsFile: File,
 ) {
     private val knownHostsLock = Any()
+
+    init {
+        ensureBouncyCastleProviderRegistered()
+    }
 
     suspend fun openShell(
         profile: HostProfile,
@@ -52,6 +59,37 @@ class SshConnectionManager(
         client.connect(profile.host, profile.port)
         client.authPassword(profile.username, password)
         return client
+    }
+
+    private companion object {
+        @Volatile
+        private var bouncyCastleRegistered = false
+
+        /**
+         * Registers the real `org.bouncycastle` JCE provider so sshj can negotiate modern
+         * algorithms (notably curve25519-sha256 / X25519 key exchange).
+         *
+         * Android ships its own built-in security provider that is *also* named "BC" (backed by
+         * Conscrypt/AndroidOpenSSL), but it is incomplete and shadows the real BouncyCastle classes
+         * pulled in transitively via sshj -> bcprov-jdk18on. Left alone, `Security.getProvider("BC")`
+         * resolves to Android's limited provider and connecting fails with
+         * "no such algorithm: X25519 for provider BC". Explicitly removing Android's "BC" entry and
+         * inserting the real [BouncyCastleProvider] at the highest priority fixes this. This only
+         * affects JCE algorithm lookups by provider name/priority for our (and sshj's) own crypto
+         * use; it does not change how Android Keystore or EncryptedSharedPreferences resolve their
+         * own dedicated providers (e.g. "AndroidKeyStore"), so those paths are unaffected.
+         *
+         * Do NOT remove this registration - without it modern OpenSSH servers that offer
+         * curve25519-sha256 key exchange cannot be connected to.
+         */
+        @Synchronized
+        private fun ensureBouncyCastleProviderRegistered() {
+            if (bouncyCastleRegistered) return
+            Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
+            Security.insertProviderAt(BouncyCastleProvider(), 1)
+            SecurityUtils.setRegisterBouncyCastle(true)
+            bouncyCastleRegistered = true
+        }
     }
 }
 
