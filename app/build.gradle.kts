@@ -70,6 +70,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.sshj)
     implementation(libs.slf4j.nop)
+    implementation(libs.bouncycastle.bcprov)
+    implementation(libs.bouncycastle.bcpkix)
+    implementation(libs.bouncycastle.bcutil)
     ksp(libs.androidx.room.compiler)
     testImplementation(libs.junit)
 }
