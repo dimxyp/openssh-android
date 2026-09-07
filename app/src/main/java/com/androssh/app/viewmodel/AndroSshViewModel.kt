@@ -49,10 +49,21 @@ class AndroSshViewModel(
         _uiState.value = AndroSshUiState(screen = Screen.EditConnection, form = ConnectionFormState())
     }
 
+    /**
+     * Opens the edit form for [profile], pre-filling the previously saved password (if any) so the
+     * user can see/correct it instead of the field appearing blank. The password itself never
+     * touches the Room database; it's read straight from the [ConnectionRepository]-backed
+     * encrypted store for this one profile.
+     */
     fun openEditProfileForm(profile: HostProfile) {
+        val savedPassword = if (profile.authMethod == AuthMethod.Password) {
+            repository.getPassword(profile.id).orEmpty()
+        } else {
+            ""
+        }
         _uiState.value = AndroSshUiState(
             screen = Screen.EditConnection,
-            form = ConnectionFormState.fromProfile(profile),
+            form = ConnectionFormState.fromProfile(profile).copy(password = savedPassword),
         )
     }
 
