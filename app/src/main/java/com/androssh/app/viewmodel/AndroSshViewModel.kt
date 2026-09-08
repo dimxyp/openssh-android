@@ -9,6 +9,7 @@ import com.androssh.app.data.HostProfile
 import com.androssh.app.ssh.ActiveSshSession
 import com.androssh.app.ssh.NetworkReachabilityChecker
 import com.androssh.app.ssh.SshConnectionManager
+import com.androssh.app.ssh.SshSessionKeepAlive
 import com.androssh.app.terminal.TerminalEmulator
 import com.androssh.app.terminal.TerminalSnapshot
 import java.util.concurrent.atomic.AtomicBoolean
@@ -28,6 +29,7 @@ class AndroSshViewModel(
     private val repository: ConnectionRepository,
     private val sshConnectionManager: SshConnectionManager,
     private val reachabilityChecker: NetworkReachabilityChecker = NetworkReachabilityChecker(),
+    private val keepAlive: SshSessionKeepAlive? = null,
 ) : ViewModel() {
     val profiles: StateFlow<List<HostProfile>> = repository.observeProfiles()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -178,6 +180,9 @@ class AndroSshViewModel(
             screen = Screen.Terminal,
             selectedProfile = profile,
         )
+        // Anchor the process lifetime for as long as the shell is open, so backgrounding the app
+        // does not tear down the socket or the output-reading coroutine.
+        keepAlive?.start("${profile.username}@${profile.host}")
         feedTerminal("Connecting to ${profile.username}@${profile.host}:${profile.port}...\r\n")
         startRenderLoop()
         viewModelScope.launch {
@@ -188,6 +193,7 @@ class AndroSshViewModel(
                 feedTerminal("Connected.\r\n")
                 outputJob = session.readOutput(viewModelScope) { output -> feedTerminal(output) }
             }.onFailure { error ->
+                keepAlive?.stop()
                 feedTerminal("Connection failed: ${error.message ?: error::class.simpleName}\r\n")
             }
         }
@@ -248,6 +254,7 @@ class AndroSshViewModel(
         outputJob = null
         activeSession?.close()
         activeSession = null
+        keepAlive?.stop()
     }
 
     override fun onCleared() {
@@ -273,11 +280,16 @@ private data class ReachabilityTarget(
 class AndroSshViewModelFactory(
     private val repository: ConnectionRepository,
     private val sshConnectionManager: SshConnectionManager,
+    private val keepAlive: SshSessionKeepAlive? = null,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(AndroSshViewModel::class.java)) {
-            return AndroSshViewModel(repository, sshConnectionManager) as T
+            return AndroSshViewModel(
+                repository = repository,
+                sshConnectionManager = sshConnectionManager,
+                keepAlive = keepAlive,
+            ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
     }

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -22,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
@@ -54,6 +56,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -95,26 +98,34 @@ fun AndroSshApp(
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             Scaffold { padding ->
+                // The terminal screen drops the app title and outer padding so the grid and the
+                // extra keys bar get essentially the whole screen; the Scaffold insets are still
+                // applied so nothing is drawn under the status/navigation bars.
+                val isTerminal = uiState.screen == Screen.Terminal
                 Column(
                     modifier = Modifier
                         .padding(padding)
-                        .padding(16.dp)
+                        .padding(if (isTerminal) 0.dp else 16.dp)
                         .fillMaxSize(),
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text(text = "AndroSSH", style = MaterialTheme.typography.headlineMedium)
-                        if (uiState.screen == Screen.ConnectionList) {
-                            TextButton(onClick = viewModel::openBackup) { Text("Backup") }
+                    if (!isTerminal) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(text = "AndroSSH", style = MaterialTheme.typography.headlineMedium)
+                            if (uiState.screen == Screen.ConnectionList) {
+                                TextButton(onClick = viewModel::openBackup) { Text("Backup") }
+                            }
                         }
                     }
                     uiState.message?.let {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(text = it, style = MaterialTheme.typography.bodyMedium)
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
+                    if (!isTerminal) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
                     when (uiState.screen) {
                         Screen.ConnectionList -> ConnectionListScreen(
                             profiles = profiles,
@@ -344,10 +355,14 @@ private fun TerminalScreen(
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
     val clipboardManager = LocalClipboardManager.current
     val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     // Focus the hidden input capture as soon as the terminal is shown so the on-screen keyboard
     // comes up without requiring the user to first tap something.
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+        keyboardController?.show()
+    }
 
     fun pushUndo(previous: TextFieldValue) {
         undoStack.add(previous)
@@ -378,20 +393,58 @@ private fun TerminalScreen(
 
     Column(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(profile?.let { "${it.username}@${it.host}" } ?: "Terminal")
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f)
-                .background(Color.Black)
-                .clickable { focusRequester.requestFocus() }
-                .verticalScroll(rememberScrollState())
-                .horizontalScroll(rememberScrollState())
-                .padding(4.dp),
+                .weight(1f),
         ) {
-            TerminalGrid(snapshot = terminal.snapshot)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .clickable {
+                        focusRequester.requestFocus()
+                        // requestFocus() alone is a no-op when the hidden field never lost focus
+                        // (e.g. the user dismissed the keyboard with the IME's own back button),
+                        // so the IME has to be shown explicitly as well.
+                        keyboardController?.show()
+                    }
+                    .verticalScroll(rememberScrollState())
+                    .horizontalScroll(rememberScrollState())
+                    .padding(4.dp),
+            ) {
+                TerminalGrid(snapshot = terminal.snapshot)
+            }
+            // Unobtrusive translucent status overlay: shows who/where we are connected to and
+            // offers a compact disconnect control instead of a full-width button.
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
+                    .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = profile?.let { "${it.username}@${it.host}" } ?: "Terminal",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.75f),
+                )
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.size(24.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PowerSettingsNew,
+                        contentDescription = "Disconnect",
+                        tint = Color.White.copy(alpha = 0.75f),
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
         }
         ExtraKeysBar(
             onSendKey = { sequence -> onSend(sequence) },
@@ -469,6 +522,5 @@ private fun TerminalScreen(
                 .alpha(0f)
                 .semantics { contentDescription = "Terminal keyboard input" },
         )
-        OutlinedButton(onClick = onBack) { Text("Disconnect") }
     }
 }
