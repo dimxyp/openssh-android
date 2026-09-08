@@ -17,6 +17,10 @@ package com.androssh.app.terminal
  *  - basic SGR (Select Graphic Rendition) attributes: `ESC[...m` - reset, bold, and the 8
  *    standard foreground/background colors
  *
+ * Lines that scroll off the top of the screen are not discarded: they are kept in a bounded
+ * scrollback buffer (see [maxScrollbackLines]) and exposed through [TerminalSnapshot.scrollback] so
+ * the UI can render session history above the live screen, like a real terminal window.
+ *
  * This class has no Android/Compose dependency so its parsing logic can be unit tested in
  * isolation; the Compose UI layer only ever reads immutable [TerminalSnapshot]s produced by
  * [snapshot], which keeps rendering decoupled from parsing.
@@ -24,7 +28,11 @@ package com.androssh.app.terminal
  * This is a clean-room implementation written from scratch for AndroSSH; it is not derived from
  * JuiceSSH, Termux, or any other terminal emulator's source code.
  */
-class TerminalEmulator(rows: Int, cols: Int) {
+class TerminalEmulator(
+    rows: Int,
+    cols: Int,
+    private val maxScrollbackLines: Int = DEFAULT_MAX_SCROLLBACK_LINES,
+) {
 
     var rows: Int = rows
         private set
@@ -32,6 +40,12 @@ class TerminalEmulator(rows: Int, cols: Int) {
         private set
 
     private var grid: Array<Array<TerminalCell>> = Array(rows) { Array(cols) { TerminalCell() } }
+
+    /**
+     * Lines that have scrolled off the top of the live screen, oldest first. Bounded to
+     * [maxScrollbackLines] so a long-running session cannot grow the buffer without limit.
+     */
+    private val scrollback = ArrayDeque<List<TerminalCell>>()
     private var cursorRow = 0
     private var cursorCol = 0
     private var currentStyle = TerminalStyle()
@@ -39,15 +53,26 @@ class TerminalEmulator(rows: Int, cols: Int) {
     private var parserState = ParserState.Normal
     private val paramBuilder = StringBuilder()
 
-    /** Resizes the screen buffer, preserving as much of the existing content as fits. */
+    /**
+     * Resizes the screen buffer, preserving as much of the existing content as fits.
+     *
+     * When the screen shrinks (e.g. the soft keyboard opens) the *bottom* of the screen - where the
+     * prompt and the most recent output live - is what the user cares about, so the lines that no
+     * longer fit are taken off the top and moved into the scrollback rather than dropping the
+     * newest output.
+     */
     @Synchronized
     fun resize(newRows: Int, newCols: Int) {
         if (newRows <= 0 || newCols <= 0 || (newRows == rows && newCols == cols)) return
         val oldGrid = grid
-        grid = Array(newRows) { r -> Array(newCols) { c -> oldGrid.getOrNull(r)?.getOrNull(c) ?: TerminalCell() } }
+        val dropped = (rows - newRows).coerceAtLeast(0)
+        for (r in 0 until dropped) pushScrollback(oldGrid[r].toList())
+        grid = Array(newRows) { r ->
+            Array(newCols) { c -> oldGrid.getOrNull(r + dropped)?.getOrNull(c) ?: TerminalCell() }
+        }
         rows = newRows
         cols = newCols
-        cursorRow = cursorRow.coerceIn(0, rows - 1)
+        cursorRow = (cursorRow - dropped).coerceIn(0, rows - 1)
         cursorCol = cursorCol.coerceIn(0, cols - 1)
     }
 
@@ -57,9 +82,10 @@ class TerminalEmulator(rows: Int, cols: Int) {
         for (ch in text) processChar(ch)
     }
 
-    /** Clears the screen buffer and resets cursor/style state. */
+    /** Clears the screen buffer and the scrollback, and resets cursor/style state. */
     @Synchronized
     fun reset() {
+        scrollback.clear()
         grid = Array(rows) { Array(cols) { TerminalCell() } }
         cursorRow = 0
         cursorCol = 0
@@ -72,6 +98,7 @@ class TerminalEmulator(rows: Int, cols: Int) {
     @Synchronized
     fun snapshot(): TerminalSnapshot = TerminalSnapshot(
         rows = grid.map { it.toList() },
+        scrollback = scrollback.toList(),
         cursorRow = cursorRow,
         cursorCol = cursorCol,
     )
@@ -130,10 +157,18 @@ class TerminalEmulator(rows: Int, cols: Int) {
     }
 
     private fun scrollUp() {
+        pushScrollback(grid[0].toList())
         for (r in 0 until rows - 1) {
             grid[r] = grid[r + 1]
         }
         grid[rows - 1] = Array(cols) { TerminalCell() }
+    }
+
+    /** Appends [line] to the bounded scrollback, dropping the oldest line once the cap is hit. */
+    private fun pushScrollback(line: List<TerminalCell>) {
+        if (maxScrollbackLines <= 0) return
+        scrollback.addLast(line)
+        while (scrollback.size > maxScrollbackLines) scrollback.removeFirst()
     }
 
     private fun processCsiChar(ch: Char) {
@@ -213,8 +248,11 @@ class TerminalEmulator(rows: Int, cols: Int) {
 
     private enum class ParserState { Normal, Escape, CharsetDesignator, Csi }
 
-    private companion object {
-        const val TAB_WIDTH = 8
+    companion object {
+        private const val TAB_WIDTH = 8
+
+        /** Default number of scrolled-off lines kept for scrollback. */
+        const val DEFAULT_MAX_SCROLLBACK_LINES = 2000
     }
 }
 
@@ -237,6 +275,7 @@ data class TerminalStyle(
 /** Immutable, UI-consumable snapshot of the terminal screen buffer at a point in time. */
 data class TerminalSnapshot(
     val rows: List<List<TerminalCell>>,
-    val cursorRow: Int,
-    val cursorCol: Int,
+    val scrollback: List<List<TerminalCell>> = emptyList(),
+    val cursorRow: Int = 0,
+    val cursorCol: Int = 0,
 )

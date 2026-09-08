@@ -6,9 +6,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -65,12 +67,15 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -118,11 +123,23 @@ fun AndroSshApp(
                 // the floating overlay applying the status-bar inset itself. Every other screen
                 // gets the full Scaffold insets plus the usual content padding.
                 val isTerminal = uiState.screen == Screen.Terminal
+                val density = LocalDensity.current
+                // Extra bottom room needed while the soft keyboard is up. The navigation-bar inset
+                // is already covered by the Scaffold padding below and is part of the IME inset, so
+                // only the difference is added - that way the terminal area shrinks to sit exactly
+                // on top of the keyboard instead of being pushed off-screen.
+                val imeBottomPadding = with(density) {
+                    (WindowInsets.ime.getBottom(this) - WindowInsets.navigationBars.getBottom(this))
+                        .coerceAtLeast(0)
+                        .toDp()
+                }
                 Column(
                     modifier = Modifier
                         .then(
                             if (isTerminal) {
-                                Modifier.padding(bottom = padding.calculateBottomPadding())
+                                Modifier.padding(
+                                    bottom = padding.calculateBottomPadding() + imeBottomPadding,
+                                )
                             } else {
                                 Modifier.padding(padding).padding(16.dp)
                             },
@@ -170,6 +187,7 @@ fun AndroSshApp(
                             terminal = uiState.terminal,
                             onBack = viewModel::showConnectionList,
                             onSend = viewModel::sendTerminalInput,
+                            onResize = viewModel::onTerminalSizeChanged,
                         )
 
                         Screen.Sftp -> {
@@ -370,6 +388,7 @@ private fun TerminalScreen(
     terminal: TerminalState,
     onBack: () -> Unit,
     onSend: (String) -> Unit,
+    onResize: (rows: Int, cols: Int) -> Unit,
 ) {
     var input by remember { mutableStateOf(TextFieldValue()) }
     // The status overlay only shows briefly (on connect and on every tap) so it never permanently
@@ -383,6 +402,10 @@ private fun TerminalScreen(
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val view = LocalView.current
+    val textMeasurer = rememberTextMeasurer()
+    // Must stay in sync with the style TerminalGrid renders its rows with, otherwise the measured
+    // character cell would not match the glyphs actually drawn.
+    val terminalTextStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
 
     // The terminal paints its dark teal background behind the transparent status bar, so the system
     // icons have to be switched to their light variant while it is shown (and restored afterwards).
@@ -452,7 +475,7 @@ private fun TerminalScreen(
                 .fillMaxWidth()
                 .weight(1f),
         ) {
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(TerminalColors.Background)
@@ -460,14 +483,34 @@ private fun TerminalScreen(
                         showKeyboard()
                         overlayTaps++
                     }
-                    .verticalScroll(rememberScrollState())
-                    .horizontalScroll(rememberScrollState())
                     // The teal terminal background runs edge-to-edge, but its content keeps clear
                     // of the status bar so the clock/system icons stay readable.
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(4.dp),
             ) {
-                TerminalGrid(snapshot = terminal.snapshot)
+                // The emulator grid is sized to the area that is actually visible: the measured
+                // monospace glyph box divides the available space into whole character cells. The
+                // result is pushed down to the session so the local buffer *and* the remote PTY
+                // agree with what the user sees - recomputed automatically whenever this area
+                // changes size (rotation, split-screen, keyboard opening or closing).
+                val glyphs = remember(textMeasurer, terminalTextStyle) {
+                    textMeasurer.measure(
+                        AnnotatedString("M".repeat(GLYPH_SAMPLE_LENGTH)),
+                        style = terminalTextStyle,
+                        softWrap = false,
+                    )
+                }
+                val charWidth = (glyphs.size.width / GLYPH_SAMPLE_LENGTH).coerceAtLeast(1)
+                val lineHeight = glyphs.size.height.coerceAtLeast(1)
+                val cols = (constraints.maxWidth / charWidth).coerceAtLeast(MIN_TERMINAL_COLS)
+                val rows = (constraints.maxHeight / lineHeight).coerceAtLeast(MIN_TERMINAL_ROWS)
+                LaunchedEffect(rows, cols) {
+                    onResize(rows, cols)
+                    // Resizing usually means the keyboard just appeared or disappeared; bring the
+                    // overlay back so the disconnect control is always within reach.
+                    overlayTaps++
+                }
+                TerminalGrid(snapshot = terminal.snapshot, modifier = Modifier.fillMaxSize())
             }
             // Unobtrusive translucent status overlay: shows who/where we are connected to and
             // offers a compact disconnect control instead of a full-width button. It fades away a
@@ -566,6 +609,13 @@ private fun TerminalScreen(
         )
     }
 }
+
+/** Number of sample glyphs measured at once, so the average character width is not rounding-skewed. */
+private const val GLYPH_SAMPLE_LENGTH = 10
+
+/** Lower bounds for the auto-measured grid, so a degenerate measurement can never produce 0 rows/cols. */
+private const val MIN_TERMINAL_ROWS = 4
+private const val MIN_TERMINAL_COLS = 20
 
 /** How long the `user@host` overlay stays visible after the last tap before fading out. */
 private const val OVERLAY_VISIBLE_MILLIS = 3_000L

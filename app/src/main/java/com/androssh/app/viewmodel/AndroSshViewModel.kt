@@ -212,6 +212,15 @@ class AndroSshViewModel(
     }
 
     /**
+     * Reports the terminal size measured by the UI (viewport size / monospace glyph metrics), which
+     * resizes the emulator's screen buffer and the remote PTY. Called again whenever the visible
+     * area changes: rotation, split-screen, and the soft keyboard opening or closing.
+     */
+    fun onTerminalSizeChanged(rows: Int, cols: Int) {
+        sessionHolder.resizeTerminal(rows = rows, cols = cols)
+    }
+
+    /**
      * Only the reachability polling is tied to this view model's lifetime; the SSH session
      * deliberately is not, so backgrounding the app (which may destroy the Activity and this view
      * model) leaves the shell running inside [SshSessionHolder].
