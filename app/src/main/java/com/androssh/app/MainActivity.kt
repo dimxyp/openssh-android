@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.androssh.app.ssh.ForegroundServiceKeepAlive
 import com.androssh.app.ui.AndroSshApp
 import com.androssh.app.viewmodel.AndroSshViewModel
 import com.androssh.app.viewmodel.AndroSshViewModelFactory
@@ -23,6 +24,7 @@ class MainActivity : ComponentActivity() {
                 factory = AndroSshViewModelFactory(
                     repository = container.connectionRepository,
                     sshConnectionManager = container.sshConnectionManager,
+                    keepAlive = ForegroundServiceKeepAlive(applicationContext),
                 ),
             )
             val sftpViewModel: SftpViewModel = viewModel(
