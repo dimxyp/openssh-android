@@ -6,7 +6,9 @@ import com.androssh.app.data.ConnectionRepository
 import com.androssh.app.data.EncryptedCredentialStore
 import com.androssh.app.data.backup.BackupManager
 import com.androssh.app.data.sftp.SftpRepository
+import com.androssh.app.ssh.ForegroundServiceKeepAlive
 import com.androssh.app.ssh.SshConnectionManager
+import com.androssh.app.ssh.SshSessionHolder
 import java.io.File
 
 class AndroSshApplication : Application() {
@@ -27,6 +29,12 @@ class AndroSshApplication : Application() {
         container = AppContainer(
             connectionRepository = connectionRepository,
             sshConnectionManager = sshConnectionManager,
+            // Application-scoped so the live shell (and its scrollback) survives Activity and
+            // ViewModel destruction; SshForegroundService keeps this process alive meanwhile.
+            sshSessionHolder = SshSessionHolder(
+                connectionManager = sshConnectionManager,
+                keepAlive = ForegroundServiceKeepAlive(this),
+            ),
             sftpRepository = SftpRepository(sshConnectionManager),
             backupManager = BackupManager(connectionRepository),
         )
@@ -36,6 +44,7 @@ class AndroSshApplication : Application() {
 data class AppContainer(
     val connectionRepository: ConnectionRepository,
     val sshConnectionManager: SshConnectionManager,
+    val sshSessionHolder: SshSessionHolder,
     val sftpRepository: SftpRepository,
     val backupManager: BackupManager,
 )

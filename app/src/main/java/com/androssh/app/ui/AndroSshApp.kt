@@ -1,6 +1,9 @@
 package com.androssh.app.ui
 
 import android.app.Activity
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -51,6 +54,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -81,6 +85,7 @@ import com.androssh.app.ui.backup.BackupScreen
 import com.androssh.app.ui.sftp.SftpScreen
 import com.androssh.app.ui.terminal.EditAction
 import com.androssh.app.ui.terminal.ExtraKeysBar
+import com.androssh.app.ui.terminal.TerminalColors
 import com.androssh.app.ui.terminal.TerminalGrid
 import com.androssh.app.viewmodel.AndroSshViewModel
 import com.androssh.app.viewmodel.BackupViewModel
@@ -89,6 +94,7 @@ import com.androssh.app.viewmodel.ReachabilityStatus
 import com.androssh.app.viewmodel.Screen
 import com.androssh.app.viewmodel.SftpViewModel
 import com.androssh.app.viewmodel.TerminalState
+import kotlinx.coroutines.delay
 
 @Composable
 fun AndroSshApp(
@@ -134,11 +140,11 @@ fun AndroSshApp(
                             }
                         }
                     }
-                    uiState.message?.let {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(text = it, style = MaterialTheme.typography.bodyMedium)
-                    }
                     if (!isTerminal) {
+                        uiState.message?.let {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(text = it, style = MaterialTheme.typography.bodyMedium)
+                        }
                         Spacer(modifier = Modifier.height(16.dp))
                     }
                     when (uiState.screen) {
@@ -366,6 +372,11 @@ private fun TerminalScreen(
     onSend: (String) -> Unit,
 ) {
     var input by remember { mutableStateOf(TextFieldValue()) }
+    // The status overlay only shows briefly (on connect and on every tap) so it never permanently
+    // covers terminal output; the tap counter restarts the hide timer.
+    var overlayVisible by remember { mutableStateOf(true) }
+    var overlayTaps by remember { mutableIntStateOf(0) }
+    var keyboardVisible by remember { mutableStateOf(true) }
     val undoStack = remember { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
     val clipboardManager = LocalClipboardManager.current
@@ -373,8 +384,8 @@ private fun TerminalScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val view = LocalView.current
 
-    // The terminal paints black behind the transparent status bar, so the system icons have to be
-    // switched to their light variant while it is shown (and restored afterwards).
+    // The terminal paints its dark teal background behind the transparent status bar, so the system
+    // icons have to be switched to their light variant while it is shown (and restored afterwards).
     DisposableEffect(view) {
         val controller = (view.context as? Activity)
             ?.let { activity -> WindowCompat.getInsetsController(activity.window, view) }
@@ -392,6 +403,20 @@ private fun TerminalScreen(
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
         keyboardController?.show()
+    }
+
+    LaunchedEffect(overlayTaps) {
+        overlayVisible = true
+        delay(OVERLAY_VISIBLE_MILLIS)
+        overlayVisible = false
+    }
+
+    fun showKeyboard() {
+        focusRequester.requestFocus()
+        // requestFocus() alone is a no-op when the hidden field never lost focus (e.g. the user
+        // dismissed the keyboard with the IME's own back button), so show the IME explicitly too.
+        keyboardController?.show()
+        keyboardVisible = true
     }
 
     fun pushUndo(previous: TextFieldValue) {
@@ -421,10 +446,7 @@ private fun TerminalScreen(
         input = newValue
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -433,17 +455,14 @@ private fun TerminalScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black)
+                    .background(TerminalColors.Background)
                     .clickable {
-                        focusRequester.requestFocus()
-                        // requestFocus() alone is a no-op when the hidden field never lost focus
-                        // (e.g. the user dismissed the keyboard with the IME's own back button),
-                        // so the IME has to be shown explicitly as well.
-                        keyboardController?.show()
+                        showKeyboard()
+                        overlayTaps++
                     }
                     .verticalScroll(rememberScrollState())
                     .horizontalScroll(rememberScrollState())
-                    // The black terminal background runs edge-to-edge, but its content keeps clear
+                    // The teal terminal background runs edge-to-edge, but its content keeps clear
                     // of the status bar so the clock/system icons stay readable.
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(4.dp),
@@ -451,38 +470,54 @@ private fun TerminalScreen(
                 TerminalGrid(snapshot = terminal.snapshot)
             }
             // Unobtrusive translucent status overlay: shows who/where we are connected to and
-            // offers a compact disconnect control instead of a full-width button.
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .windowInsetsPadding(WindowInsets.statusBars)
-                    .padding(4.dp)
-                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            // offers a compact disconnect control instead of a full-width button. It fades away a
+            // few seconds after the last tap so the terminal output is never permanently covered,
+            // and comes back whenever the terminal area is tapped.
+            AnimatedVisibility(
+                visible = overlayVisible,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.TopEnd),
             ) {
-                Text(
-                    text = profile?.let { "${it.username}@${it.host}" } ?: "Terminal",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = Color.White,
-                )
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier.size(24.dp),
+                Row(
+                    modifier = Modifier
+                        .windowInsetsPadding(WindowInsets.statusBars)
+                        .padding(4.dp)
+                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.PowerSettingsNew,
-                        contentDescription = "Disconnect",
-                        tint = Color.White,
-                        modifier = Modifier.size(16.dp),
+                    Text(
+                        text = profile?.let { "${it.username}@${it.host}" } ?: "Terminal",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = Color.White,
                     )
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier.size(24.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.PowerSettingsNew,
+                            contentDescription = "Disconnect",
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
                 }
             }
         }
         ExtraKeysBar(
             onSendKey = { sequence -> onSend(sequence) },
+            onToggleKeyboard = {
+                if (keyboardVisible) {
+                    keyboardController?.hide()
+                    keyboardVisible = false
+                } else {
+                    showKeyboard()
+                }
+            },
             onEditAction = { action ->
                 when (action) {
                     EditAction.SelectAll -> {
@@ -559,3 +594,6 @@ private fun TerminalScreen(
         )
     }
 }
+
+/** How long the `user@host` overlay stays visible after the last tap before fading out. */
+private const val OVERLAY_VISIBLE_MILLIS = 3_000L

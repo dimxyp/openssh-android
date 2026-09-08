@@ -15,8 +15,9 @@ import com.androssh.app.terminal.TerminalSnapshot
 /**
  * Renders a [TerminalSnapshot] as a monospace character grid: one row per buffer line, each built
  * as a single [androidx.compose.ui.text.AnnotatedString] with per-character color/bold spans
- * derived from the terminal emulator's SGR state. The cursor cell is highlighted by swapping its
- * foreground/background colors. This composable only reads the snapshot it is given - all
+ * derived from the terminal emulator's SGR state. The cursor cell is drawn as a solid block using
+ * [TerminalColors.Cursor]. Colors that the emulator does not set explicitly fall back to
+ * [TerminalColors]. This composable only reads the snapshot it is given - all
  * parsing/state lives in [com.androssh.app.terminal.TerminalEmulator].
  *
  * Original implementation written from scratch for AndroSSH; not derived from JuiceSSH, Termux,
@@ -29,12 +30,15 @@ fun TerminalGrid(snapshot: TerminalSnapshot) {
             val annotated = buildAnnotatedString {
                 row.forEachIndexed { colIndex, cell ->
                     val isCursor = rowIndex == snapshot.cursorRow && colIndex == snapshot.cursorCol
-                    val foreground = ansiColor(cell.style.foreground, bright = cell.style.bold) ?: DefaultForeground
-                    val background = cell.style.background?.let { ansiColor(it, bright = false) } ?: DefaultBackground
+                    val foreground = ansiColor(cell.style.foreground, bright = cell.style.bold) ?: TerminalColors.Foreground
+                    val background = cell.style.background?.let { ansiColor(it, bright = false) }
+                        ?: TerminalColors.Background
+                    // The cursor cell is painted as a solid light block with the background color
+                    // showing through the glyph, matching a classic block cursor.
                     withStyle(
                         SpanStyle(
-                            color = if (isCursor) background else foreground,
-                            background = if (isCursor) foreground else background,
+                            color = if (isCursor) TerminalColors.Background else foreground,
+                            background = if (isCursor) TerminalColors.Cursor else background,
                             fontWeight = if (cell.style.bold) FontWeight.Bold else FontWeight.Normal,
                         ),
                     ) {
@@ -51,9 +55,6 @@ fun TerminalGrid(snapshot: TerminalSnapshot) {
         }
     }
 }
-
-private val DefaultForeground = Color(0xFFD3D7CF)
-private val DefaultBackground = Color(0xFF000000)
 
 private val AnsiNormalColors = listOf(
     Color(0xFF000000), Color(0xFFCC0000), Color(0xFF4E9A06), Color(0xFFC4A000),
