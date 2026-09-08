@@ -35,6 +35,9 @@ app/src/main/java/com/androssh/app/
 ## Features
 
 - Connection list screen for saved SSH host profiles, with add/edit/delete and per-connection SFTP access.
+- Each connection card shows TCP reachability for its configured host and SSH port. This is not
+  ICMP ping: a blocked SSH port appears offline even if ping works, while an open SSH port appears
+  online even if the host blocks ICMP.
 - Password authentication path wired first; private key authentication intentionally stubbed for later work.
 - Known-hosts based SSH host-key verification foundation; a trust-on-first-use or host-key management UI is a follow-up task.
 - **Real interactive terminal emulator** (`terminal/TerminalEmulator.kt`, `ui/terminal/TerminalGrid.kt`): a from-scratch, original VT100/ANSI-subset parser and in-memory screen buffer (rows/cols grid of styled characters) - not derived from JuiceSSH, Termux, or any other terminal emulator. It supports printable characters, `\r`/`\n`/backspace/tab, cursor positioning (`ESC[<row>;<col>H`), relative cursor movement (`ESC[A/B/C/D`), erase in line/display (`ESC[K`, `ESC[J` and their `0`/`1`/`2` variants), and basic SGR attributes (`ESC[...m` bold + the 8 standard foreground/background colors). Typing is live: every keystroke from a hidden input capture is streamed straight to the shell channel as it's typed (no "Send" button), and `AndroSshViewModel` batches/throttles screen-buffer updates (~20 fps) so fast output (e.g. `top`) doesn't recompose the UI per byte. Known limitations: fixed screen size (not yet resized to the device's actual font metrics/orientation), no scrollback buffer, and no support for alternate-screen mode, 256-color/truecolor SGR codes, or bracketed paste.

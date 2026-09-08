@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -20,12 +21,17 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -41,6 +47,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
@@ -55,6 +62,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.androssh.app.data.AuthMethod
 import com.androssh.app.data.HostProfile
@@ -66,6 +74,7 @@ import com.androssh.app.ui.terminal.TerminalGrid
 import com.androssh.app.viewmodel.AndroSshViewModel
 import com.androssh.app.viewmodel.BackupViewModel
 import com.androssh.app.viewmodel.ConnectionFormState
+import com.androssh.app.viewmodel.ReachabilityStatus
 import com.androssh.app.viewmodel.Screen
 import com.androssh.app.viewmodel.SftpViewModel
 import com.androssh.app.viewmodel.TerminalState
@@ -78,6 +87,10 @@ fun AndroSshApp(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val profiles by viewModel.profiles.collectAsState()
+
+    LaunchedEffect(uiState.screen, profiles) {
+        viewModel.monitorReachability(profiles, uiState.screen == Screen.ConnectionList)
+    }
 
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -105,6 +118,7 @@ fun AndroSshApp(
                     when (uiState.screen) {
                         Screen.ConnectionList -> ConnectionListScreen(
                             profiles = profiles,
+                            reachability = uiState.reachability,
                             onAdd = viewModel::openNewProfileForm,
                             onEdit = viewModel::openEditProfileForm,
                             onDelete = viewModel::deleteProfile,
@@ -145,6 +159,7 @@ fun AndroSshApp(
 @Composable
 private fun ConnectionListScreen(
     profiles: List<HostProfile>,
+    reachability: Map<Long, ReachabilityStatus>,
     onAdd: () -> Unit,
     onEdit: (HostProfile) -> Unit,
     onDelete: (HostProfile) -> Unit,
@@ -163,7 +178,21 @@ private fun ConnectionListScreen(
                             modifier = Modifier.padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(profile.name, style = MaterialTheme.typography.titleMedium)
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                val status = reachability[profile.id] ?: ReachabilityStatus.Unknown
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .background(status.color, CircleShape)
+                                        .semantics {
+                                            contentDescription = "Reachability: ${status.name.lowercase()}"
+                                        },
+                                )
+                                Text(profile.name, style = MaterialTheme.typography.titleMedium)
+                            }
                             Text("${profile.username}@${profile.host}:${profile.port}")
                             Text("Auth: ${profile.authMethod.name}")
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -189,6 +218,7 @@ private fun EditConnectionScreen(
     onCancel: () -> Unit,
 ) {
     var authExpanded by remember { mutableStateOf(false) }
+    var passwordVisible by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -252,7 +282,23 @@ private fun EditConnectionScreen(
                 value = form.password,
                 onValueChange = { value -> onFormChange { copy(password = value) } },
                 label = { Text("Password") },
-                visualTransformation = PasswordVisualTransformation(),
+                visualTransformation = if (passwordVisible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            imageVector = if (passwordVisible) {
+                                Icons.Filled.VisibilityOff
+                            } else {
+                                Icons.Filled.Visibility
+                            },
+                            contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                        )
+                    }
+                },
                 modifier = Modifier.fillMaxWidth(),
             )
         } else {
@@ -264,12 +310,20 @@ private fun EditConnectionScreen(
             )
             Text("Private key authentication is scaffolded for future implementation.")
         }
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onSave) { Text("Save") }
             OutlinedButton(onClick = onCancel) { Text("Cancel") }
         }
     }
 }
+
+private val ReachabilityStatus.color: Color
+    get() = when (this) {
+        ReachabilityStatus.Reachable -> Color(0xFF2E7D32)
+        ReachabilityStatus.Unreachable -> Color(0xFFC62828)
+        ReachabilityStatus.Unknown, ReachabilityStatus.Checking -> Color.Gray
+    }
 
 /** Returns the currently selected text of this [TextFieldValue], or an empty [AnnotatedString] if there is no selection. */
 private fun TextFieldValue.selectedText(): AnnotatedString {
