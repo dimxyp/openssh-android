@@ -473,40 +473,12 @@ private fun TerminalScreen(
             // offers a compact disconnect control instead of a full-width button. It fades away a
             // few seconds after the last tap so the terminal output is never permanently covered,
             // and comes back whenever the terminal area is tapped.
-            AnimatedVisibility(
+            TerminalStatusOverlay(
                 visible = overlayVisible,
-                enter = fadeIn(),
-                exit = fadeOut(),
+                title = profile?.let { "${it.username}@${it.host}" } ?: "Terminal",
+                onDisconnect = onBack,
                 modifier = Modifier.align(Alignment.TopEnd),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .windowInsetsPadding(WindowInsets.statusBars)
-                        .padding(4.dp)
-                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = profile?.let { "${it.username}@${it.host}" } ?: "Terminal",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = Color.White,
-                    )
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier.size(24.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.PowerSettingsNew,
-                            contentDescription = "Disconnect",
-                            tint = Color.White,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                }
-            }
+            )
         }
         ExtraKeysBar(
             onSendKey = { sequence -> onSend(sequence) },
@@ -597,3 +569,54 @@ private fun TerminalScreen(
 
 /** How long the `user@host` overlay stays visible after the last tap before fading out. */
 private const val OVERLAY_VISIBLE_MILLIS = 3_000L
+
+/**
+ * Translucent `user@host` + disconnect overlay shown on top of the terminal output.
+ *
+ * It lives in its own composable (rather than being inlined at the call site) so that
+ * [AnimatedVisibility] resolves to the plain, non-scoped overload: inside the terminal layout both
+ * `ColumnScope` and `BoxScope` are in scope as implicit receivers, which makes the call ambiguous.
+ * The caller supplies the placement via [modifier] (e.g. `Modifier.align(Alignment.TopEnd)`).
+ */
+@Composable
+private fun TerminalStatusOverlay(
+    visible: Boolean,
+    title: String,
+    onDisconnect: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(4.dp)
+                .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                color = Color.White,
+            )
+            IconButton(
+                onClick = onDisconnect,
+                modifier = Modifier.size(24.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.PowerSettingsNew,
+                    contentDescription = "Disconnect",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+    }
+}
