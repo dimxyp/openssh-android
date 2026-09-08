@@ -1,5 +1,6 @@
 package com.androssh.app.ui
 
+import android.app.Activity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -8,11 +9,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -42,6 +46,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -57,9 +62,11 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -67,6 +74,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import com.androssh.app.data.AuthMethod
 import com.androssh.app.data.HostProfile
 import com.androssh.app.ui.backup.BackupScreen
@@ -99,13 +107,20 @@ fun AndroSshApp(
         Surface(modifier = Modifier.fillMaxSize()) {
             Scaffold { padding ->
                 // The terminal screen drops the app title and outer padding so the grid and the
-                // extra keys bar get essentially the whole screen; the Scaffold insets are still
-                // applied so nothing is drawn under the status/navigation bars.
+                // extra keys bar get essentially the whole screen: it deliberately keeps only the
+                // bottom (navigation bar) inset and draws edge-to-edge behind the status bar, with
+                // the floating overlay applying the status-bar inset itself. Every other screen
+                // gets the full Scaffold insets plus the usual content padding.
                 val isTerminal = uiState.screen == Screen.Terminal
                 Column(
                     modifier = Modifier
-                        .padding(padding)
-                        .padding(if (isTerminal) 0.dp else 16.dp)
+                        .then(
+                            if (isTerminal) {
+                                Modifier.padding(bottom = padding.calculateBottomPadding())
+                            } else {
+                                Modifier.padding(padding).padding(16.dp)
+                            },
+                        )
                         .fillMaxSize(),
                 ) {
                     if (!isTerminal) {
@@ -356,6 +371,21 @@ private fun TerminalScreen(
     val clipboardManager = LocalClipboardManager.current
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val view = LocalView.current
+
+    // The terminal paints black behind the transparent status bar, so the system icons have to be
+    // switched to their light variant while it is shown (and restored afterwards).
+    DisposableEffect(view) {
+        val controller = (view.context as? Activity)
+            ?.let { activity -> WindowCompat.getInsetsController(activity.window, view) }
+        val previous = controller?.isAppearanceLightStatusBars
+        controller?.isAppearanceLightStatusBars = false
+        onDispose {
+            if (controller != null && previous != null) {
+                controller.isAppearanceLightStatusBars = previous
+            }
+        }
+    }
 
     // Focus the hidden input capture as soon as the terminal is shown so the on-screen keyboard
     // comes up without requiring the user to first tap something.
@@ -413,6 +443,9 @@ private fun TerminalScreen(
                     }
                     .verticalScroll(rememberScrollState())
                     .horizontalScroll(rememberScrollState())
+                    // The black terminal background runs edge-to-edge, but its content keeps clear
+                    // of the status bar so the clock/system icons stay readable.
+                    .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(4.dp),
             ) {
                 TerminalGrid(snapshot = terminal.snapshot)
@@ -422,16 +455,18 @@ private fun TerminalScreen(
             Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
+                    .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(4.dp)
-                    .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
+                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
                     .padding(horizontal = 6.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = profile?.let { "${it.username}@${it.host}" } ?: "Terminal",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White.copy(alpha = 0.75f),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White,
                 )
                 IconButton(
                     onClick = onBack,
@@ -440,7 +475,7 @@ private fun TerminalScreen(
                     Icon(
                         imageVector = Icons.Filled.PowerSettingsNew,
                         contentDescription = "Disconnect",
-                        tint = Color.White.copy(alpha = 0.75f),
+                        tint = Color.White,
                         modifier = Modifier.size(16.dp),
                     )
                 }

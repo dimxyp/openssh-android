@@ -3,6 +3,7 @@ package com.androssh.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.androssh.app.ssh.ForegroundServiceKeepAlive
@@ -16,6 +17,9 @@ import com.androssh.app.viewmodel.SftpViewModelFactory
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Draw behind the system bars and let the platform keep them transparent, so no opaque
+        // strip is ever painted where the status bar sits.
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val container = (application as AndroSshApplication).container
         val widgetProfileId = intent.getLongExtra(EXTRA_PROFILE_ID, -1L).takeIf { it >= 0 }

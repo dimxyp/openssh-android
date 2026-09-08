@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -69,6 +68,12 @@ fun ExtraKeysBar(
     var showAltPicker by remember { mutableStateOf(false) }
     var dragAccumulator by remember { mutableFloatStateOf(0f) }
 
+    fun toggleMode() {
+        mode = if (mode == BarMode.ExtraKeys) BarMode.Edit else BarMode.ExtraKeys
+        showCtrlPicker = false
+        showAltPicker = false
+    }
+
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -77,9 +82,7 @@ fun ExtraKeysBar(
                     onDragStart = { dragAccumulator = 0f },
                     onDragEnd = {
                         if (kotlin.math.abs(dragAccumulator) > SWIPE_TOGGLE_THRESHOLD_PX) {
-                            mode = if (mode == BarMode.ExtraKeys) BarMode.Edit else BarMode.ExtraKeys
-                            showCtrlPicker = false
-                            showAltPicker = false
+                            toggleMode()
                         }
                         dragAccumulator = 0f
                     },
@@ -128,6 +131,9 @@ fun ExtraKeysBar(
                                 label = if (showFunctionRow) "F\u25B2" else "F\u25BC",
                                 onClick = { showFunctionRow = !showFunctionRow },
                             )
+                            // The ExtraKeys/Edit toggle rides along in this same scrollable row so
+                            // the bar never costs the terminal a second row of height.
+                            KeyChip(label = MODE_TOGGLE_LABEL, onClick = { toggleMode() })
                         }
                         if (showFunctionRow) {
                             Row(
@@ -156,19 +162,8 @@ fun ExtraKeysBar(
                         EditAction.entries.forEach { action ->
                             KeyChip(label = action.name, onClick = { onEditAction(action) })
                         }
+                        KeyChip(label = MODE_TOGGLE_LABEL, onClick = { toggleMode() })
                     }
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-            ) {
-                IconButton(onClick = {
-                    mode = if (mode == BarMode.ExtraKeys) BarMode.Edit else BarMode.ExtraKeys
-                    showCtrlPicker = false
-                    showAltPicker = false
-                }) {
-                    Text(text = "\u21C4", style = MaterialTheme.typography.titleMedium)
                 }
             }
         }
@@ -214,3 +209,6 @@ private fun KeyChip(label: String, onClick: () -> Unit) {
 }
 
 private const val SWIPE_TOGGLE_THRESHOLD_PX = 120f
+
+/** Glyph of the chip that flips the bar between [BarMode.ExtraKeys] and [BarMode.Edit]. */
+private const val MODE_TOGGLE_LABEL = "\u21C4"
