@@ -6,13 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.androssh.app.data.AuthMethod
 import com.androssh.app.data.ConnectionRepository
 import com.androssh.app.data.HostProfile
-import com.androssh.app.ssh.ActiveSshSession
 import com.androssh.app.ssh.NetworkReachabilityChecker
-import com.androssh.app.ssh.SshConnectionManager
-import com.androssh.app.ssh.SshSessionKeepAlive
-import com.androssh.app.terminal.TerminalEmulator
+import com.androssh.app.ssh.SshSessionHolder
 import com.androssh.app.terminal.TerminalSnapshot
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -25,11 +21,15 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+/**
+ * UI state holder for the whole app. It deliberately does *not* own the live SSH session: that
+ * lives in the process-scoped [SshSessionHolder] (kept alive by the foreground service), which this
+ * view model only observes and drives. Destroying this view model therefore never closes the shell.
+ */
 class AndroSshViewModel(
     private val repository: ConnectionRepository,
-    private val sshConnectionManager: SshConnectionManager,
+    private val sessionHolder: SshSessionHolder,
     private val reachabilityChecker: NetworkReachabilityChecker = NetworkReachabilityChecker(),
-    private val keepAlive: SshSessionKeepAlive? = null,
 ) : ViewModel() {
     val profiles: StateFlow<List<HostProfile>> = repository.observeProfiles()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -37,20 +37,28 @@ class AndroSshViewModel(
     private val _uiState = MutableStateFlow(AndroSshUiState())
     val uiState: StateFlow<AndroSshUiState> = _uiState.asStateFlow()
 
-    private var activeSession: ActiveSshSession? = null
-    private var outputJob: Job? = null
-    private var renderJob: Job? = null
     private var reachabilityJob: Job? = null
     private var reachabilityTargets = emptyList<ReachabilityTarget>()
 
-    /**
-     * Parses incoming shell bytes into a screen buffer. Every byte the shell writes is fed into
-     * this emulator; the resulting [TerminalSnapshot] is what the Compose UI renders. Snapshots
-     * are only published to [uiState] on a throttled interval (see [startRenderLoop]) so bursts
-     * of output (e.g. `top` redrawing) don't trigger a recomposition per byte.
-     */
-    private val terminalEmulator = TerminalEmulator(rows = TERMINAL_ROWS, cols = TERMINAL_COLS)
-    private val terminalDirty = AtomicBoolean(false)
+    init {
+        // Returning to a still-running session (app resumed, Activity recreated, notification
+        // tapped) must resume it rather than reconnect, so start straight on the terminal screen.
+        sessionHolder.state.value.profile?.let { profile ->
+            _uiState.value = AndroSshUiState(screen = Screen.Terminal, selectedProfile = profile)
+        }
+        viewModelScope.launch {
+            sessionHolder.state.collect { session ->
+                _uiState.update { state ->
+                    if (session.profile == null && state.screen == Screen.Terminal) {
+                        // The session was closed elsewhere, e.g. via the notification action.
+                        AndroSshUiState(screen = Screen.ConnectionList)
+                    } else {
+                        state.copy(terminal = TerminalState(snapshot = session.snapshot))
+                    }
+                }
+            }
+        }
+    }
 
     fun openNewProfileForm() {
         _uiState.value = AndroSshUiState(screen = Screen.EditConnection, form = ConnectionFormState())
@@ -83,7 +91,7 @@ class AndroSshViewModel(
     }
 
     fun showConnectionList() {
-        closeSession()
+        sessionHolder.disconnect()
         _uiState.value = AndroSshUiState(screen = Screen.ConnectionList)
     }
 
@@ -174,32 +182,21 @@ class AndroSshViewModel(
     }
 
     fun connect(profile: HostProfile) {
-        closeSession()
-        terminalEmulator.reset()
         _uiState.value = AndroSshUiState(
             screen = Screen.Terminal,
             selectedProfile = profile,
+            terminal = TerminalState(snapshot = sessionHolder.state.value.snapshot),
         )
-        // Anchor the process lifetime for as long as the shell is open, so backgrounding the app
-        // does not tear down the socket or the output-reading coroutine.
-        keepAlive?.start("${profile.username}@${profile.host}")
-        feedTerminal("Connecting to ${profile.username}@${profile.host}:${profile.port}...\r\n")
-        startRenderLoop()
-        viewModelScope.launch {
-            runCatching {
-                sshConnectionManager.openShell(profile, repository.getPassword(profile.id))
-            }.onSuccess { session ->
-                activeSession = session
-                feedTerminal("Connected.\r\n")
-                outputJob = session.readOutput(viewModelScope) { output -> feedTerminal(output) }
-            }.onFailure { error ->
-                keepAlive?.stop()
-                feedTerminal("Connection failed: ${error.message ?: error::class.simpleName}\r\n")
-            }
-        }
+        // Reconnecting to the host we are already on would throw away a perfectly good shell (and
+        // its scrollback), so only open a new session when this really is a different one.
+        if (sessionHolder.isSessionOpenFor(profile.id)) return
+        sessionHolder.connect(profile, repository.getPassword(profile.id))
     }
 
-    /** Connects directly to a saved profile by id, e.g. when launched from the home-screen widget. */
+    /**
+     * Connects directly to a saved profile by id, e.g. when launched from the home-screen widget.
+     * Resumes the existing session when that profile is already connected.
+     */
     fun connectByProfileId(profileId: Long) {
         viewModelScope.launch {
             repository.getProfile(profileId)?.let { profile -> connect(profile) }
@@ -211,62 +208,20 @@ class AndroSshViewModel(
 
     /** Sends raw input straight to the shell channel, e.g. live keystrokes or [com.androssh.app.ui.terminal.ExtraKeysBar] sequences. */
     fun sendTerminalInput(input: String) {
-        if (input.isEmpty()) return
-        val session = activeSession
-        viewModelScope.launch {
-            runCatching { session?.sendInput(input) }
-                .onFailure { feedTerminal("Send failed: ${it.message ?: it::class.simpleName}\r\n") }
-        }
-    }
-
-    private fun feedTerminal(text: String) {
-        terminalEmulator.feed(text)
-        terminalDirty.set(true)
+        sessionHolder.send(input)
     }
 
     /**
-     * Publishes [terminalEmulator]'s snapshot to [uiState] at most every [TERMINAL_RENDER_INTERVAL_MS]
-     * while there is unpublished output, instead of once per incoming chunk. This keeps Compose
-     * recomposition work bounded even when the remote shell streams output very quickly (e.g. `top`
-     * or `cat` on a large file).
+     * Only the reachability polling is tied to this view model's lifetime; the SSH session
+     * deliberately is not, so backgrounding the app (which may destroy the Activity and this view
+     * model) leaves the shell running inside [SshSessionHolder].
      */
-    private fun startRenderLoop() {
-        renderJob?.cancel()
-        publishTerminalSnapshot()
-        renderJob = viewModelScope.launch {
-            while (isActive) {
-                delay(TERMINAL_RENDER_INTERVAL_MS)
-                if (terminalDirty.compareAndSet(true, false)) {
-                    publishTerminalSnapshot()
-                }
-            }
-        }
-    }
-
-    private fun publishTerminalSnapshot() {
-        _uiState.update { it.copy(terminal = TerminalState(snapshot = terminalEmulator.snapshot())) }
-    }
-
-    private fun closeSession() {
-        renderJob?.cancel()
-        renderJob = null
-        outputJob?.cancel()
-        outputJob = null
-        activeSession?.close()
-        activeSession = null
-        keepAlive?.stop()
-    }
-
     override fun onCleared() {
         reachabilityJob?.cancel()
-        closeSession()
         super.onCleared()
     }
 
     private companion object {
-        const val TERMINAL_ROWS = 30
-        const val TERMINAL_COLS = 100
-        const val TERMINAL_RENDER_INTERVAL_MS = 50L
         const val REACHABILITY_INTERVAL_MS = 30_000L
     }
 }
@@ -279,16 +234,14 @@ private data class ReachabilityTarget(
 
 class AndroSshViewModelFactory(
     private val repository: ConnectionRepository,
-    private val sshConnectionManager: SshConnectionManager,
-    private val keepAlive: SshSessionKeepAlive? = null,
+    private val sessionHolder: SshSessionHolder,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(AndroSshViewModel::class.java)) {
             return AndroSshViewModel(
                 repository = repository,
-                sshConnectionManager = sshConnectionManager,
-                keepAlive = keepAlive,
+                sessionHolder = sessionHolder,
             ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")

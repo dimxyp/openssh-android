@@ -19,6 +19,9 @@ enum class TerminalKey(val label: String, val sequence: String) {
     PageUp("PgUp", "\u001B[5~"),
     PageDown("PgDn", "\u001B[6~"),
     Insert("Ins", "\u001B[2~"),
+    Slash("/", "/"),
+    Pipe("|", "|"),
+    Minus("-", "-"),
     Delete("Del", "\u001B[3~"),
     F1("F1", "\u001BOP"),
     F2("F2", "\u001BOQ"),
@@ -49,17 +52,29 @@ fun ctrlSequenceFor(letter: Char): String {
 
 /** Rows of extra keys shown in the [com.androssh.app.ui.terminal.ExtraKeysBar]. */
 object ExtraKeysLayout {
-    val primaryRow: List<TerminalKey> = listOf(
+    /** First (upper) row of the compact two-row bar. */
+    val topRow: List<TerminalKey> = listOf(
         TerminalKey.Escape,
-        TerminalKey.Tab,
+        TerminalKey.Slash,
+        TerminalKey.Pipe,
+        TerminalKey.Minus,
         TerminalKey.Home,
+        TerminalKey.ArrowUp,
         TerminalKey.End,
         TerminalKey.PageUp,
-        TerminalKey.PageDown,
-        TerminalKey.ArrowUp,
-        TerminalKey.ArrowDown,
+    )
+
+    /** Second-row keys shown before the Ctrl/Alt modifier keys. */
+    val bottomRowLeading: List<TerminalKey> = listOf(
+        TerminalKey.Tab,
+    )
+
+    /** Second-row keys shown after the Ctrl/Alt modifier keys. */
+    val bottomRowTrailing: List<TerminalKey> = listOf(
         TerminalKey.ArrowLeft,
+        TerminalKey.ArrowDown,
         TerminalKey.ArrowRight,
+        TerminalKey.PageDown,
     )
 
     val functionRow: List<TerminalKey> = listOf(

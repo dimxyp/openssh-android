@@ -4,6 +4,8 @@
     <string name="widget_tap_to_configure">Tap to choose a connection</string>
     <string name="widget_description">Quick-connect to a saved SSH server</string>
     <string name="ssh_session_channel_name">SSH session</string>
+    <string name="ssh_session_channel_description">Ongoing notification shown while an SSH session is open</string>
     <string name="ssh_session_notification_title">SSH session active</string>
-    <string name="ssh_session_notification_text">Connected to %1$s</string>
+    <string name="ssh_session_notification_running">%1$s is running</string>
+    <string name="ssh_session_notification_disconnect">Disconnect</string>
 </resources>
