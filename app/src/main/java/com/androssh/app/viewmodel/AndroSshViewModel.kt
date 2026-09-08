@@ -7,11 +7,13 @@ import com.androssh.app.data.AuthMethod
 import com.androssh.app.data.ConnectionRepository
 import com.androssh.app.data.HostProfile
 import com.androssh.app.ssh.ActiveSshSession
+import com.androssh.app.ssh.NetworkReachabilityChecker
 import com.androssh.app.ssh.SshConnectionManager
 import com.androssh.app.terminal.TerminalEmulator
 import com.androssh.app.terminal.TerminalSnapshot
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -25,6 +27,7 @@ import kotlinx.coroutines.launch
 class AndroSshViewModel(
     private val repository: ConnectionRepository,
     private val sshConnectionManager: SshConnectionManager,
+    private val reachabilityChecker: NetworkReachabilityChecker = NetworkReachabilityChecker(),
 ) : ViewModel() {
     val profiles: StateFlow<List<HostProfile>> = repository.observeProfiles()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -35,6 +38,8 @@ class AndroSshViewModel(
     private var activeSession: ActiveSshSession? = null
     private var outputJob: Job? = null
     private var renderJob: Job? = null
+    private var reachabilityJob: Job? = null
+    private var reachabilityTargets = emptyList<ReachabilityTarget>()
 
     /**
      * Parses incoming shell bytes into a screen buffer. Every byte the shell writes is fed into
@@ -112,6 +117,57 @@ class AndroSshViewModel(
         viewModelScope.launch {
             repository.deleteProfile(profile)
             _uiState.update { it.copy(message = "Connection deleted.") }
+        }
+    }
+
+    fun monitorReachability(profiles: List<HostProfile>, enabled: Boolean) {
+        val targets = if (enabled) {
+            profiles.map { ReachabilityTarget(it.id, it.host, it.port) }
+        } else {
+            emptyList()
+        }
+        if (targets == reachabilityTargets) return
+
+        reachabilityTargets = targets
+        reachabilityJob?.cancel()
+        reachabilityJob = null
+        val targetIds = targets.mapTo(mutableSetOf()) { it.profileId }
+        _uiState.update { state ->
+            state.copy(reachability = state.reachability.filterKeys { it in targetIds })
+        }
+        if (targets.isEmpty()) return
+
+        reachabilityJob = viewModelScope.launch {
+            while (isActive) {
+                _uiState.update { state ->
+                    state.copy(
+                        reachability = state.reachability + targets.associate {
+                            it.profileId to ReachabilityStatus.Checking
+                        },
+                    )
+                }
+                coroutineScope {
+                    targets.forEach { target ->
+                        launch {
+                            val reachable = reachabilityChecker.isReachable(target.host, target.port)
+                            if (target in reachabilityTargets) {
+                                _uiState.update { state ->
+                                    state.copy(
+                                        reachability = state.reachability + (
+                                            target.profileId to if (reachable) {
+                                                ReachabilityStatus.Reachable
+                                            } else {
+                                                ReachabilityStatus.Unreachable
+                                            }
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                delay(REACHABILITY_INTERVAL_MS)
+            }
         }
     }
 
@@ -195,6 +251,7 @@ class AndroSshViewModel(
     }
 
     override fun onCleared() {
+        reachabilityJob?.cancel()
         closeSession()
         super.onCleared()
     }
@@ -203,8 +260,15 @@ class AndroSshViewModel(
         const val TERMINAL_ROWS = 30
         const val TERMINAL_COLS = 100
         const val TERMINAL_RENDER_INTERVAL_MS = 50L
+        const val REACHABILITY_INTERVAL_MS = 30_000L
     }
 }
+
+private data class ReachabilityTarget(
+    val profileId: Long,
+    val host: String,
+    val port: Int,
+)
 
 class AndroSshViewModelFactory(
     private val repository: ConnectionRepository,
@@ -224,8 +288,16 @@ data class AndroSshUiState(
     val selectedProfile: HostProfile? = null,
     val form: ConnectionFormState = ConnectionFormState(),
     val terminal: TerminalState = TerminalState(),
+    val reachability: Map<Long, ReachabilityStatus> = emptyMap(),
     val message: String? = null,
 )
+
+enum class ReachabilityStatus {
+    Unknown,
+    Checking,
+    Reachable,
+    Unreachable,
+}
 
 enum class Screen {
     ConnectionList,

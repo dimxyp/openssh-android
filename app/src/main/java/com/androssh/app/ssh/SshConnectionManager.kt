@@ -17,6 +17,12 @@ import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.KeyType
 import net.schmizz.sshj.common.SecurityUtils
 import net.schmizz.sshj.sftp.SFTPClient
+import net.schmizz.sshj.userauth.method.AuthKeyboardInteractive
+import net.schmizz.sshj.userauth.method.AuthMethod as SshAuthMethod
+import net.schmizz.sshj.userauth.method.AuthPassword
+import net.schmizz.sshj.userauth.method.ChallengeResponseProvider
+import net.schmizz.sshj.userauth.password.PasswordFinder
+import net.schmizz.sshj.userauth.password.Resource
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.connection.channel.direct.Session
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -57,7 +63,26 @@ class SshConnectionManager(
         val client = SSHClient()
         client.addHostKeyVerifier(AppKnownHostsVerifier(knownHostsFile, knownHostsLock))
         client.connect(profile.host, profile.port)
-        client.authPassword(profile.username, password)
+        val passwordFinder = object : PasswordFinder {
+            override fun reqPassword(resource: Resource<*>): CharArray = password.toCharArray()
+
+            override fun shouldRetry(resource: Resource<*>): Boolean = false
+        }
+        val challengeResponseProvider = object : ChallengeResponseProvider {
+            override fun getSubmethods(): List<String> = emptyList()
+
+            override fun init(resource: Resource<*>, name: String, instruction: String) = Unit
+
+            override fun getResponse(prompt: String, echo: Boolean): CharArray = password.toCharArray()
+
+            override fun shouldRetry(): Boolean = false
+        }
+        // Some servers expose password-backed PAM only as keyboard-interactive, so offer both.
+        val methods: List<SshAuthMethod> = listOf(
+            AuthPassword(passwordFinder),
+            AuthKeyboardInteractive(challengeResponseProvider),
+        )
+        client.auth(profile.username, methods)
         return client
     }
 
