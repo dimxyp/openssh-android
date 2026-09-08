@@ -72,6 +72,10 @@ class SshSessionHolder(
             runCatching { connectionManager.openShell(profile, password, cols = emulator.cols, rows = emulator.rows) }
                 .onSuccess { opened ->
                     session = opened
+                    // The viewport may have been re-measured while the connection was being set up
+                    // (e.g. the keyboard opened), in which case the PTY was allocated with a size
+                    // that is already stale - reconcile it now.
+                    runCatching { opened.resize(cols = emulator.cols, rows = emulator.rows) }
                     _state.update { it.copy(connected = true) }
                     feed("Connected.\r\n")
                     outputJob = opened.readOutput(scope) { output -> feed(output) }
@@ -96,7 +100,9 @@ class SshSessionHolder(
         dirty.set(true)
         publishSnapshot()
         val current = session ?: return
-        scope.launch { runCatching { current.resize(cols = cols, rows = rows) } }
+        // Always report the emulator's current size rather than the captured one, so two resizes
+        // racing each other cannot leave the server with stale dimensions.
+        scope.launch { runCatching { current.resize(cols = emulator.cols, rows = emulator.rows) } }
     }
 
     /** Writes raw bytes to the shell channel, e.g. live keystrokes or extra-key sequences. */

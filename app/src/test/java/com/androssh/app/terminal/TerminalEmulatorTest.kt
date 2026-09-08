@@ -173,4 +173,39 @@ class TerminalEmulatorTest {
         assertEquals("ccc", snapshot.rowText(1))
         assertEquals(1, snapshot.cursorRow)
     }
+
+    @Test
+    fun `growing the screen pulls lines back out of the scrollback`() {
+        val emulator = TerminalEmulator(rows = 3, cols = 3)
+        emulator.feed("aaa\r\nbbb\r\nccc")
+        emulator.resize(newRows = 2, newCols = 3)
+        emulator.resize(newRows = 3, newCols = 3)
+        val snapshot = emulator.snapshot()
+
+        assertTrue(snapshot.scrollback.isEmpty())
+        assertEquals("aaa", snapshot.rowText(0))
+        assertEquals("bbb", snapshot.rowText(1))
+        assertEquals("ccc", snapshot.rowText(2))
+        assertEquals(2, snapshot.cursorRow)
+    }
+
+    @Test
+    fun `extended 256-color SGR parameters are consumed instead of being read as attributes`() {
+        val emulator = TerminalEmulator(rows = 1, cols = 5)
+        emulator.feed("\u001B[38;5;1mx")
+        val cell = emulator.snapshot().rows[0][0]
+
+        assertEquals(1, cell.style.foreground)
+        assertFalse(cell.style.bold)
+    }
+
+    @Test
+    fun `truecolor SGR parameters fall back to the default color without leaking attributes`() {
+        val emulator = TerminalEmulator(rows = 1, cols = 5)
+        emulator.feed("\u001B[38;2;10;20;1mx")
+        val cell = emulator.snapshot().rows[0][0]
+
+        assertEquals(null, cell.style.foreground)
+        assertFalse(cell.style.bold)
+    }
 }

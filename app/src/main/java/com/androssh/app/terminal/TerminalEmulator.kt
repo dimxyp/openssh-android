@@ -14,8 +14,9 @@ package com.androssh.app.terminal
  *  - relative cursor movement: `ESC[<n>A/B/C/D` (up/down/forward/back)
  *  - erase in line: `ESC[K`, `ESC[0K`, `ESC[1K`, `ESC[2K`
  *  - erase in display: `ESC[J`, `ESC[0J`, `ESC[1J`, `ESC[2J`
- *  - basic SGR (Select Graphic Rendition) attributes: `ESC[...m` - reset, bold, and the 8
- *    standard foreground/background colors
+ *  - basic SGR (Select Graphic Rendition) attributes: `ESC[...m` - reset, bold, and the 8 standard
+ *    (plus the 8 bright) foreground/background colors; the extended 256-color/truecolor forms are
+ *    consumed and approximated instead of being mis-parsed as separate attributes
  *
  * Lines that scroll off the top of the screen are not discarded: they are kept in a bounded
  * scrollback buffer (see [maxScrollbackLines]) and exposed through [TerminalSnapshot.scrollback] so
@@ -59,20 +60,28 @@ class TerminalEmulator(
      * When the screen shrinks (e.g. the soft keyboard opens) the *bottom* of the screen - where the
      * prompt and the most recent output live - is what the user cares about, so the lines that no
      * longer fit are taken off the top and moved into the scrollback rather than dropping the
-     * newest output.
+     * newest output. Growing again pulls those lines back out of the scrollback, so repeatedly
+     * opening and closing the keyboard neither loses content nor pollutes the history.
      */
     @Synchronized
     fun resize(newRows: Int, newCols: Int) {
         if (newRows <= 0 || newCols <= 0 || (newRows == rows && newCols == cols)) return
-        val oldGrid = grid
         val dropped = (rows - newRows).coerceAtLeast(0)
-        for (r in 0 until dropped) pushScrollback(oldGrid[r].toList())
+        for (r in 0 until dropped) pushScrollback(grid[r].toList())
+
+        val restored = ArrayList<List<TerminalCell>>()
+        repeat((newRows - rows).coerceAtLeast(0)) {
+            val line = scrollback.removeLastOrNull() ?: return@repeat
+            restored.add(0, line)
+        }
+
+        val lines = restored + grid.drop(dropped).map { it.toList() }
         grid = Array(newRows) { r ->
-            Array(newCols) { c -> oldGrid.getOrNull(r + dropped)?.getOrNull(c) ?: TerminalCell() }
+            Array(newCols) { c -> lines.getOrNull(r)?.getOrNull(c) ?: TerminalCell() }
         }
         rows = newRows
         cols = newCols
-        cursorRow = (cursorRow - dropped).coerceIn(0, rows - 1)
+        cursorRow = (cursorRow - dropped + restored.size).coerceIn(0, rows - 1)
         cursorCol = cursorCol.coerceIn(0, cols - 1)
     }
 
@@ -225,13 +234,43 @@ class TerminalEmulator(
         }
     }
 
+    /**
+     * Applies an `ESC[...m` parameter list. Besides the 8 standard (and 8 bright) colors this also
+     * *consumes* the extended `38;5;n` / `48;5;n` (256-color) and `38;2;r;g;b` / `48;2;r;g;b`
+     * (truecolor) forms: their exact colors are outside the supported subset, but the trailing
+     * parameters must not be interpreted as separate attributes - `ESC[38;5;1m` means "foreground
+     * color 1", not "bold".
+     */
     private fun applySgr(codes: List<Int>) {
         if (codes.isEmpty()) {
             currentStyle = TerminalStyle()
             return
         }
         var style = currentStyle
-        for (code in codes) {
+        var index = 0
+        while (index < codes.size) {
+            val code = codes[index]
+            index++
+            if (code == EXTENDED_FOREGROUND || code == EXTENDED_BACKGROUND) {
+                val color = when (codes.getOrNull(index)) {
+                    5 -> {
+                        val paletteIndex = codes.getOrNull(index + 1)
+                        index += 2
+                        paletteIndex?.let { if (it < 16) it % 8 else null }
+                    }
+                    2 -> {
+                        index += 4
+                        null
+                    }
+                    else -> null
+                }
+                style = if (code == EXTENDED_FOREGROUND) {
+                    style.copy(foreground = color)
+                } else {
+                    style.copy(background = color)
+                }
+                continue
+            }
             style = when (code) {
                 0 -> TerminalStyle()
                 1 -> style.copy(bold = true)
@@ -240,6 +279,8 @@ class TerminalEmulator(
                 39 -> style.copy(foreground = null)
                 in 40..47 -> style.copy(background = code - 40)
                 49 -> style.copy(background = null)
+                in 90..97 -> style.copy(foreground = code - 90, bold = true)
+                in 100..107 -> style.copy(background = code - 100)
                 else -> style
             }
         }
@@ -250,6 +291,8 @@ class TerminalEmulator(
 
     companion object {
         private const val TAB_WIDTH = 8
+        private const val EXTENDED_FOREGROUND = 38
+        private const val EXTENDED_BACKGROUND = 48
 
         /** Default number of scrolled-off lines kept for scrollback. */
         const val DEFAULT_MAX_SCROLLBACK_LINES = 2000

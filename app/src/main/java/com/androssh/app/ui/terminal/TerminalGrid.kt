@@ -1,5 +1,6 @@
 package com.androssh.app.ui.terminal
 
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -48,10 +49,17 @@ fun TerminalGrid(
     val listState = rememberLazyListState()
     val lines = remember(snapshot) { snapshot.scrollback + snapshot.rows }
     val liveScreenStart = snapshot.scrollback.size
-    // Whether new output should keep the view pinned to the bottom. It is only re-evaluated when a
-    // scroll gesture settles, so appending lines (which by itself makes the last item scroll out of
-    // view) never flips it off on its own.
+    // Whether new output should keep the view pinned to the bottom. Following stops the moment the
+    // user starts dragging (so output arriving mid-gesture cannot yank the view back down) and is
+    // re-evaluated once the scroll settles. Programmatic scrolls emit no drag interaction, so
+    // auto-following never turns itself off.
     var followOutput by remember { mutableStateOf(true) }
+
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start) followOutput = false
+        }
+    }
 
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress }
