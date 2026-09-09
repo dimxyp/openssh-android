@@ -67,6 +67,11 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -449,36 +454,45 @@ private fun TerminalScreen(
     }
 
     /**
+     * Sends whatever command text has accumulated in the hidden buffer followed by a carriage
+     * return, then resets the buffer to empty. This is the single, authoritative "submit the
+     * current line" path - both the IME's Send action and the hardware/virtual Enter key
+     * (intercepted in [Modifier.onKeyEvent] below) funnel through here, so the buffer can never be
+     * left holding stale text after a command has already been executed on the shell.
+     */
+    fun submitLine() {
+        if (input.text.isNotEmpty()) {
+            onSend(input.text)
+        }
+        onSend("\r")
+        pushUndo(input)
+        input = TextFieldValue()
+    }
+
+    /**
      * Applies [newValue] as the new hidden-input-buffer state and streams whatever changed
      * straight to the shell channel, so ordinary typing/backspace/paste never needs an explicit
      * "Send" action. Appends/trailing-deletes are streamed char-by-char; anything else (e.g. a
      * paste replacing a mid-line selection) falls back to backspacing the old text and retyping
      * the new text, which stays correct even though it isn't the most minimal byte sequence.
      *
-     * A trailing "\n" in [newValue] means some IMEs inserted a literal newline instead of firing
-     * [KeyboardActions.onSend] when Enter was pressed (this happens with `imeAction = Send` on
-     * several keyboards once autocomplete/suggestions are involved). That newline is stripped and
-     * translated into a carriage return sent to the shell, and the buffer is cleared exactly like
-     * the explicit "Send" path - otherwise the old command text would linger in the hidden buffer,
-     * causing the next keystroke's diff to backspace/retype the stale command onto the new prompt.
+     * A trailing "\n" here means some IME inserted a literal newline instead of going through
+     * [Modifier.onKeyEvent]/[KeyboardActions.onSend] - treat it exactly like [submitLine] so the
+     * buffer is always cleared once Enter has been handled in any form.
      */
     fun applyInput(newValue: TextFieldValue) {
-        val oldText = input.text
         if (newValue.text.endsWith("\n")) {
+            val oldText = input.text
             val withoutNewline = newValue.text.removeSuffix("\n")
-            when {
-                withoutNewline == oldText -> Unit
-                withoutNewline.startsWith(oldText) -> onSend(withoutNewline.substring(oldText.length))
-                oldText.startsWith(withoutNewline) -> onSend("\b".repeat(oldText.length - withoutNewline.length))
-                else -> {
-                    onSend("\b".repeat(oldText.length))
-                    onSend(withoutNewline)
-                }
+            input = when {
+                withoutNewline == oldText -> input
+                withoutNewline.startsWith(oldText) -> input.copy(text = withoutNewline)
+                else -> input.copy(text = withoutNewline)
             }
-            onSend("\r")
-            input = TextFieldValue()
+            submitLine()
             return
         }
+        val oldText = input.text
         val newText = newValue.text
         when {
             newText == oldText -> Unit
@@ -616,25 +630,43 @@ private fun TerminalScreen(
         // has no visible presence (1dp, fully transparent) - its sole purpose is to receive the
         // on-screen keyboard's input events so regular typing can be streamed live (see
         // [applyInput]) instead of requiring a separate visible "command line" + Send button.
-        // singleLine = true additionally hints IMEs to treat Enter as a submit action rather than
-        // inserting a literal line break, though [applyInput] handles either outcome correctly.
+        //
+        // Enter/Send is handled in three redundant ways because different IMEs/hardware keyboards
+        // disagree on how they signal "the user pressed Enter":
+        //  1. Modifier.onKeyEvent intercepts the raw Enter/NumPadEnter key down event before the
+        //     text field can insert a newline into the buffer - this is what fires for hardware
+        //     keyboards and most on-screen keyboards' physical Enter key.
+        //  2. KeyboardActions.onSend fires when the IME action button (imeAction = Send) is
+        //     tapped - relevant for keyboards that render a dedicated "Send"/arrow button instead
+        //     of a newline-shaped Enter key.
+        //  3. As a last-resort fallback, applyInput() still recognizes a literal trailing "\n" that
+        //     slipped through both of the above (some third-party IMEs insert it directly).
+        // All three converge on the same submitLine(), so the buffer is always fully cleared after
+        // a command is dispatched - previously only path 2 cleared the buffer, so a keyboard that
+        // exclusively used path 1 or 3 left the just-executed command sitting in the buffer, which
+        // then reappeared as a stale retype on the very next keystroke.
         BasicTextField(
             value = input,
             onValueChange = { newValue ->
                 if (newValue.text != input.text) pushUndo(input)
                 applyInput(newValue)
             },
-            singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(
-                onSend = {
-                    onSend("\r")
-                    pushUndo(input)
-                    applyInput(TextFieldValue())
-                },
+                onSend = { submitLine() },
             ),
             modifier = Modifier
                 .focusRequester(focusRequester)
+                .onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown &&
+                        (event.key == Key.Enter || event.key == Key.NumPadEnter)
+                    ) {
+                        submitLine()
+                        true
+                    } else {
+                        false
+                    }
+                }
                 .size(1.dp)
                 .alpha(0f)
                 .semantics { contentDescription = "Terminal keyboard input" },
