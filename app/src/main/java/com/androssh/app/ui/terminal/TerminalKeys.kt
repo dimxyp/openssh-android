@@ -59,7 +59,6 @@ object ExtraKeysLayout {
         TerminalKey.Pipe,
         TerminalKey.Minus,
         TerminalKey.Home,
-        TerminalKey.ArrowUp,
         TerminalKey.End,
         TerminalKey.PageUp,
     )
@@ -72,6 +71,7 @@ object ExtraKeysLayout {
     /** Second-row keys shown after the Ctrl/Alt modifier keys. */
     val bottomRowTrailing: List<TerminalKey> = listOf(
         TerminalKey.ArrowLeft,
+        TerminalKey.ArrowUp,
         TerminalKey.ArrowDown,
         TerminalKey.ArrowRight,
         TerminalKey.PageDown,
