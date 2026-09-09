@@ -454,9 +454,31 @@ private fun TerminalScreen(
      * "Send" action. Appends/trailing-deletes are streamed char-by-char; anything else (e.g. a
      * paste replacing a mid-line selection) falls back to backspacing the old text and retyping
      * the new text, which stays correct even though it isn't the most minimal byte sequence.
+     *
+     * A trailing "\n" in [newValue] means some IMEs inserted a literal newline instead of firing
+     * [KeyboardActions.onSend] when Enter was pressed (this happens with `imeAction = Send` on
+     * several keyboards once autocomplete/suggestions are involved). That newline is stripped and
+     * translated into a carriage return sent to the shell, and the buffer is cleared exactly like
+     * the explicit "Send" path - otherwise the old command text would linger in the hidden buffer,
+     * causing the next keystroke's diff to backspace/retype the stale command onto the new prompt.
      */
     fun applyInput(newValue: TextFieldValue) {
         val oldText = input.text
+        if (newValue.text.endsWith("\n")) {
+            val withoutNewline = newValue.text.removeSuffix("\n")
+            when {
+                withoutNewline == oldText -> Unit
+                withoutNewline.startsWith(oldText) -> onSend(withoutNewline.substring(oldText.length))
+                oldText.startsWith(withoutNewline) -> onSend("\b".repeat(oldText.length - withoutNewline.length))
+                else -> {
+                    onSend("\b".repeat(oldText.length))
+                    onSend(withoutNewline)
+                }
+            }
+            onSend("\r")
+            input = TextFieldValue()
+            return
+        }
         val newText = newValue.text
         when {
             newText == oldText -> Unit
@@ -594,12 +616,15 @@ private fun TerminalScreen(
         // has no visible presence (1dp, fully transparent) - its sole purpose is to receive the
         // on-screen keyboard's input events so regular typing can be streamed live (see
         // [applyInput]) instead of requiring a separate visible "command line" + Send button.
+        // singleLine = true additionally hints IMEs to treat Enter as a submit action rather than
+        // inserting a literal line break, though [applyInput] handles either outcome correctly.
         BasicTextField(
             value = input,
             onValueChange = { newValue ->
                 if (newValue.text != input.text) pushUndo(input)
                 applyInput(newValue)
             },
+            singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(
                 onSend = {
