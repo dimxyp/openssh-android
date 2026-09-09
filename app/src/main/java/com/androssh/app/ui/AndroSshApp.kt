@@ -63,6 +63,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.zIndex
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -473,20 +474,24 @@ private fun TerminalScreen(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
+                .weight(1f)
+                // Keep the edge-to-edge status-bar area visually continuous, but do not let the
+                // terminal gesture target extend into it. Previously the clickable was outside
+                // this inset, so a terminal scroll starting at the top edge could also pull down
+                // the system notification shade.
+                .background(TerminalColors.Background),
         ) {
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(TerminalColors.Background)
+                    // This must precede clickable: the padding reserves a transparent safe area
+                    // before the terminal receives pointer input.
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(4.dp)
                     .clickable {
                         showKeyboard()
                         overlayTaps++
-                    }
-                    // The teal terminal background runs edge-to-edge, but its content keeps clear
-                    // of the status bar so the clock/system icons stay readable.
-                    .windowInsetsPadding(WindowInsets.statusBars)
-                    .padding(4.dp),
+                    },
             ) {
                 // The emulator grid is sized to the area that is actually visible: the measured
                 // monospace glyph box divides the available space into whole character cells. The
@@ -520,7 +525,9 @@ private fun TerminalScreen(
                 visible = overlayVisible,
                 title = profile?.let { "${it.username}@${it.host}" } ?: "Terminal",
                 onDisconnect = onBack,
-                modifier = Modifier.align(Alignment.TopEnd),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .zIndex(1f),
             )
         }
         ExtraKeysBar(
@@ -639,11 +646,12 @@ private fun TerminalStatusOverlay(
         visible = visible,
         enter = fadeIn(),
         exit = fadeOut(),
-        modifier = modifier,
+        // Apply the safe-area offset to the overlay's own bounds. Applying it only to the Row
+        // left AnimatedVisibility anchored at y=0 with a transparent, easy-to-miss leading area.
+        modifier = modifier.windowInsetsPadding(WindowInsets.statusBars),
     ) {
         Row(
             modifier = Modifier
-                .windowInsetsPadding(WindowInsets.statusBars)
                 .padding(4.dp)
                 .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
                 .padding(horizontal = 6.dp, vertical = 2.dp),
