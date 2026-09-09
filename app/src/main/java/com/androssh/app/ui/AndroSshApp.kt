@@ -454,16 +454,14 @@ private fun TerminalScreen(
     }
 
     /**
-     * Sends whatever command text has accumulated in the hidden buffer followed by a carriage
-     * return, then resets the buffer to empty. This is the single, authoritative "submit the
-     * current line" path - both the IME's Send action and the hardware/virtual Enter key
-     * (intercepted in [Modifier.onKeyEvent] below) funnel through here, so the buffer can never be
-     * left holding stale text after a command has already been executed on the shell.
+     * Submits the current line: the command text itself has *already* been streamed to the shell
+     * character-by-character by [applyInput] as the user typed, so all that is left to do here is
+     * send the carriage return and reset the local buffer.
+     *
+     * Do NOT re-send [input].text from here - doing so duplicates the command on the remote side
+     * (typing "ls" then pressing Enter would execute "lsls").
      */
     fun submitLine() {
-        if (input.text.isNotEmpty()) {
-            onSend(input.text)
-        }
         onSend("\r")
         pushUndo(input)
         input = TextFieldValue()
@@ -477,23 +475,14 @@ private fun TerminalScreen(
      * the new text, which stays correct even though it isn't the most minimal byte sequence.
      *
      * A trailing "\n" here means some IME inserted a literal newline instead of going through
-     * [Modifier.onKeyEvent]/[KeyboardActions.onSend] - treat it exactly like [submitLine] so the
-     * buffer is always cleared once Enter has been handled in any form.
+     * [Modifier.onKeyEvent]/[KeyboardActions.onSend]. The text before the newline is streamed
+     * normally, then the line is submitted, so the buffer is always cleared once Enter has been
+     * handled in any form.
      */
     fun applyInput(newValue: TextFieldValue) {
-        if (newValue.text.endsWith("\n")) {
-            val oldText = input.text
-            val withoutNewline = newValue.text.removeSuffix("\n")
-            input = when {
-                withoutNewline == oldText -> input
-                withoutNewline.startsWith(oldText) -> input.copy(text = withoutNewline)
-                else -> input.copy(text = withoutNewline)
-            }
-            submitLine()
-            return
-        }
         val oldText = input.text
-        val newText = newValue.text
+        val submitting = newValue.text.endsWith("\n")
+        val newText = if (submitting) newValue.text.removeSuffix("\n") else newValue.text
         when {
             newText == oldText -> Unit
             newText.startsWith(oldText) -> onSend(newText.substring(oldText.length))
@@ -503,7 +492,12 @@ private fun TerminalScreen(
                 onSend(newText)
             }
         }
-        input = newValue
+        if (submitting) {
+            input = newValue.copy(text = newText)
+            submitLine()
+        } else {
+            input = newValue
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -634,17 +628,11 @@ private fun TerminalScreen(
         // Enter/Send is handled in three redundant ways because different IMEs/hardware keyboards
         // disagree on how they signal "the user pressed Enter":
         //  1. Modifier.onKeyEvent intercepts the raw Enter/NumPadEnter key down event before the
-        //     text field can insert a newline into the buffer - this is what fires for hardware
-        //     keyboards and most on-screen keyboards' physical Enter key.
-        //  2. KeyboardActions.onSend fires when the IME action button (imeAction = Send) is
-        //     tapped - relevant for keyboards that render a dedicated "Send"/arrow button instead
-        //     of a newline-shaped Enter key.
-        //  3. As a last-resort fallback, applyInput() still recognizes a literal trailing "\n" that
-        //     slipped through both of the above (some third-party IMEs insert it directly).
-        // All three converge on the same submitLine(), so the buffer is always fully cleared after
-        // a command is dispatched - previously only path 2 cleared the buffer, so a keyboard that
-        // exclusively used path 1 or 3 left the just-executed command sitting in the buffer, which
-        // then reappeared as a stale retype on the very next keystroke.
+        //     text field can insert a newline into the buffer.
+        //  2. KeyboardActions.onSend fires when the IME action button (imeAction = Send) is tapped.
+        //  3. applyInput() recognizes a literal trailing "\n" that slipped through both.
+        // All three converge on submitLine(), which only sends "\r" and clears the buffer - the
+        // command characters themselves were already streamed while typing.
         BasicTextField(
             value = input,
             onValueChange = { newValue ->
