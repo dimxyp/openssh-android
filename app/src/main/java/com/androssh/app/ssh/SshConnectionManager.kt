@@ -36,13 +36,27 @@ class SshConnectionManager(
         ensureBouncyCastleProviderRegistered()
     }
 
+    /**
+     * Opens an interactive shell with a PTY of exactly [cols] x [rows] characters, so the remote
+     * side wraps lines and lays out full-screen programs (`vim`, `top`, ...) for the size actually
+     * visible on the device instead of a default guess.
+     */
     suspend fun openShell(
         profile: HostProfile,
         password: String?,
+        cols: Int,
+        rows: Int,
     ): ActiveSshSession = withContext(Dispatchers.IO) {
         val client = connectAndAuthenticate(profile, password)
         val session = client.startSession()
-        session.allocateDefaultPTY()
+        session.allocatePTY(
+            TERM_TYPE,
+            cols.coerceAtLeast(1),
+            rows.coerceAtLeast(1),
+            0,
+            0,
+            emptyMap(),
+        )
         val shell = session.startShell()
         ActiveSshSession(client, session, shell)
     }
@@ -87,6 +101,9 @@ class SshConnectionManager(
     }
 
     private companion object {
+        /** Terminal type reported to the server; matches the ANSI/SGR subset the emulator renders. */
+        const val TERM_TYPE = "xterm-256color"
+
         @Volatile
         private var bouncyCastleRegistered = false
 
@@ -171,6 +188,14 @@ class ActiveSshSession internal constructor(
                 onOutput(String(buffer, 0, read))
             }
         }
+    }
+
+    /**
+     * Tells the server that the terminal window is now [cols] x [rows] characters (SSH
+     * `window-change`), so running programs re-layout - the equivalent of `SIGWINCH` locally.
+     */
+    suspend fun resize(cols: Int, rows: Int) = withContext(Dispatchers.IO) {
+        shell.changeWindowDimensions(cols.coerceAtLeast(1), rows.coerceAtLeast(1), 0, 0)
     }
 
     suspend fun sendInput(input: String) = withContext(Dispatchers.IO) {

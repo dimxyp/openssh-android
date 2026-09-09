@@ -127,4 +127,85 @@ class TerminalEmulatorTest {
         assertEquals(6, snapshot.rows[0].size)
         assertEquals("ab", snapshot.rowText(0).substring(0, 2))
     }
+
+    @Test
+    fun `lines scrolled off the top are kept in the scrollback buffer`() {
+        val emulator = TerminalEmulator(rows = 2, cols = 3)
+        emulator.feed("one\r\ntwo\r\nsix\r\n")
+        val snapshot = emulator.snapshot()
+
+        assertEquals(2, snapshot.scrollback.size)
+        assertEquals("one", snapshot.scrollback[0].joinToString("") { it.char.toString() })
+        assertEquals("two", snapshot.scrollback[1].joinToString("") { it.char.toString() })
+        assertEquals("six", snapshot.rowText(0))
+    }
+
+    @Test
+    fun `scrollback is capped at the configured maximum, dropping the oldest lines`() {
+        val emulator = TerminalEmulator(rows = 1, cols = 3, maxScrollbackLines = 2)
+        emulator.feed("aaa\r\nbbb\r\nccc\r\nddd\r\n")
+        val snapshot = emulator.snapshot()
+
+        assertEquals(2, snapshot.scrollback.size)
+        assertEquals("ccc", snapshot.scrollback[0].joinToString("") { it.char.toString() })
+        assertEquals("ddd", snapshot.scrollback[1].joinToString("") { it.char.toString() })
+    }
+
+    @Test
+    fun `reset clears the scrollback as well as the screen`() {
+        val emulator = TerminalEmulator(rows = 1, cols = 3)
+        emulator.feed("aaa\r\nbbb\r\n")
+        emulator.reset()
+
+        assertTrue(emulator.snapshot().scrollback.isEmpty())
+    }
+
+    @Test
+    fun `shrinking the screen keeps the newest lines and moves the oldest to scrollback`() {
+        val emulator = TerminalEmulator(rows = 3, cols = 3)
+        emulator.feed("aaa\r\nbbb\r\nccc")
+        emulator.resize(newRows = 2, newCols = 3)
+        val snapshot = emulator.snapshot()
+
+        assertEquals(1, snapshot.scrollback.size)
+        assertEquals("aaa", snapshot.scrollback[0].joinToString("") { it.char.toString() })
+        assertEquals("bbb", snapshot.rowText(0))
+        assertEquals("ccc", snapshot.rowText(1))
+        assertEquals(1, snapshot.cursorRow)
+    }
+
+    @Test
+    fun `growing the screen pulls lines back out of the scrollback`() {
+        val emulator = TerminalEmulator(rows = 3, cols = 3)
+        emulator.feed("aaa\r\nbbb\r\nccc")
+        emulator.resize(newRows = 2, newCols = 3)
+        emulator.resize(newRows = 3, newCols = 3)
+        val snapshot = emulator.snapshot()
+
+        assertTrue(snapshot.scrollback.isEmpty())
+        assertEquals("aaa", snapshot.rowText(0))
+        assertEquals("bbb", snapshot.rowText(1))
+        assertEquals("ccc", snapshot.rowText(2))
+        assertEquals(2, snapshot.cursorRow)
+    }
+
+    @Test
+    fun `extended 256-color SGR parameters are consumed instead of being read as attributes`() {
+        val emulator = TerminalEmulator(rows = 1, cols = 5)
+        emulator.feed("\u001B[38;5;1mx")
+        val cell = emulator.snapshot().rows[0][0]
+
+        assertEquals(1, cell.style.foreground)
+        assertFalse(cell.style.bold)
+    }
+
+    @Test
+    fun `truecolor SGR parameters fall back to the default color without leaking attributes`() {
+        val emulator = TerminalEmulator(rows = 1, cols = 5)
+        emulator.feed("\u001B[38;2;10;20;1mx")
+        val cell = emulator.snapshot().rows[0][0]
+
+        assertEquals(null, cell.style.foreground)
+        assertFalse(cell.style.bold)
+    }
 }

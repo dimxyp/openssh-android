@@ -33,7 +33,9 @@ class SshSessionHolder(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val nowMillis: () -> Long = System::currentTimeMillis,
 ) {
-    private val emulator = TerminalEmulator(rows = TERMINAL_ROWS, cols = TERMINAL_COLS)
+    // Initial size is only a placeholder: the UI measures the real viewport as soon as the
+    // terminal screen is composed and calls [resizeTerminal] with the actual rows/cols.
+    private val emulator = TerminalEmulator(rows = INITIAL_TERMINAL_ROWS, cols = INITIAL_TERMINAL_COLS)
     private val dirty = AtomicBoolean(false)
 
     private val _state = MutableStateFlow(SshSessionState())
@@ -67,9 +69,13 @@ class SshSessionHolder(
         feed("Connecting to ${profile.username}@${profile.host}:${profile.port}...\r\n")
         startRenderLoop()
         connectJob = scope.launch {
-            runCatching { connectionManager.openShell(profile, password) }
+            runCatching { connectionManager.openShell(profile, password, cols = emulator.cols, rows = emulator.rows) }
                 .onSuccess { opened ->
                     session = opened
+                    // The viewport may have been re-measured while the connection was being set up
+                    // (e.g. the keyboard opened), in which case the PTY was allocated with a size
+                    // that is already stale - reconcile it now.
+                    runCatching { opened.resize(cols = emulator.cols, rows = emulator.rows) }
                     _state.update { it.copy(connected = true) }
                     feed("Connected.\r\n")
                     outputJob = opened.readOutput(scope) { output -> feed(output) }
@@ -80,6 +86,23 @@ class SshSessionHolder(
                     feed("Connection failed: ${error.message ?: error::class.simpleName}\r\n")
                 }
         }
+    }
+
+    /**
+     * Applies a newly measured terminal size: resizes the local screen buffer and tells the server
+     * about the new window dimensions so the shell's line editing and full-screen programs stay in
+     * sync with what is actually visible.
+     */
+    fun resizeTerminal(rows: Int, cols: Int) {
+        if (rows <= 0 || cols <= 0) return
+        if (rows == emulator.rows && cols == emulator.cols) return
+        emulator.resize(rows, cols)
+        dirty.set(true)
+        publishSnapshot()
+        val current = session ?: return
+        // Always report the emulator's current size rather than the captured one, so two resizes
+        // racing each other cannot leave the server with stale dimensions.
+        scope.launch { runCatching { current.resize(cols = emulator.cols, rows = emulator.rows) } }
     }
 
     /** Writes raw bytes to the shell channel, e.g. live keystrokes or extra-key sequences. */
@@ -138,8 +161,8 @@ class SshSessionHolder(
     }
 
     private companion object {
-        const val TERMINAL_ROWS = 30
-        const val TERMINAL_COLS = 100
+        const val INITIAL_TERMINAL_ROWS = 24
+        const val INITIAL_TERMINAL_COLS = 80
         const val TERMINAL_RENDER_INTERVAL_MS = 50L
     }
 }
