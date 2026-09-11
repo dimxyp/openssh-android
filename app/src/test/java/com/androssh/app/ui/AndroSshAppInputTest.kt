@@ -46,13 +46,20 @@ class AndroSshAppInputTest {
 
     @Test
     fun `first submit is never treated as a duplicate`() {
-        assertFalse(isDuplicateSubmit(lastSubmitAtMillis = 0L, nowMillis = System.currentTimeMillis()))
+        // Mirrors the real initial value of `lastSubmitAtMillis` (far in the past), so that even
+        // a submit shortly after device boot - when SystemClock.elapsedRealtime() is itself close
+        // to 0 - is not mistaken for a duplicate.
+        assertFalse(isDuplicateSubmit(lastSubmitAtMillis = Long.MIN_VALUE / 2, nowMillis = 0L))
     }
 
     @Test
     fun `a second submit signal immediately after the first is a duplicate`() {
-        // Simulates two of the three Enter-handling paths (onKeyEvent, KeyboardActions#onSend,
-        // trailing "\n" in applyInput) firing for the same physical key press.
+        // isDuplicateSubmit is a pure function of two Long millisecond values, so any monotonic
+        // clock source works for testing it - production code feeds it SystemClock.elapsedRealtime()
+        // values, but the arbitrary offsets used here (not wall-clock timestamps) exercise the same
+        // comparison. Simulates two of the three Enter-handling paths (onKeyEvent,
+        // KeyboardActions#onSend, trailing "\n" in applyInput) firing for the same physical key
+        // press, a few milliseconds apart.
         assertTrue(isDuplicateSubmit(lastSubmitAtMillis = 1_000L, nowMillis = 1_010L))
     }
 
