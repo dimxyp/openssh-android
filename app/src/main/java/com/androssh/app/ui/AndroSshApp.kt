@@ -434,8 +434,11 @@ private fun TerminalScreen(
     // mirrors the (possibly not-final) composing preview locally, but nothing is sent to the
     // shell until the composition is committed - see the composing guard in [applyInput].
     var streamedText by remember { mutableStateOf("") }
-    // Timestamp of the last time [submitLine] actually ran; see the dedupe guard there.
-    var lastSubmitAtMillis by remember { mutableStateOf(0L) }
+    // Timestamp of the last time [submitLine] actually ran; see the dedupe guard there. Starts
+    // far enough in the past (rather than 0L) so the very first submit is never mistaken for a
+    // duplicate, even if it happens within [SUBMIT_DEDUPE_WINDOW_MILLIS] of device boot (when
+    // elapsedRealtime() is itself close to 0).
+    var lastSubmitAtMillis by remember { mutableStateOf(Long.MIN_VALUE / 2) }
     // The status overlay only shows briefly (on connect and on every tap) so it never permanently
     // covers terminal output; the tap counter restarts the hide timer.
     var overlayVisible by remember { mutableStateOf(true) }
@@ -707,8 +710,11 @@ private fun TerminalScreen(
                 // Skip while composing (see the guard in applyInput): every intermediate
                 // candidate update during an in-progress IME composition would otherwise push
                 // its own undo entry, spamming the undo stack with states the user never
-                // deliberately typed.
-                if (newValue.composition == null && newValue.text != input.text) pushUndo(input)
+                // deliberately typed. Compare against `streamedText` (the text last actually
+                // sent to the shell), not `input.text`: while composing, `input.text` has
+                // already been mutated to mirror the not-yet-committed preview, so comparing
+                // against it would never detect a change once the composition finally commits.
+                if (newValue.composition == null && newValue.text != streamedText) pushUndo(input)
                 applyInput(newValue)
             },
             keyboardOptions = KeyboardOptions(
