@@ -524,7 +524,11 @@ private fun TerminalScreen(
         if (isDuplicateSubmit(lastSubmitAtMillis, now)) return
         lastSubmitAtMillis = now
         onSend("\r")
-        pushUndo(input)
+        // Build the undo snapshot from `streamedText`, not the raw `input`: if Enter arrives via
+        // onKeyEvent/KeyboardActions.onSend while an IME composition is still in progress, `input`
+        // may still hold an uncommitted composing preview (see the guard in applyInput), and undo
+        // must never revert to that stale preview instead of the last text actually streamed.
+        pushUndo(TextFieldValue(text = streamedText, selection = TextRange(streamedText.length)))
         input = TextFieldValue()
         streamedText = ""
     }
