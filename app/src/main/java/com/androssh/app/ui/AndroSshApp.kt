@@ -412,9 +412,15 @@ internal fun computeInputDiff(oldText: String, newText: String): String {
 /**
  * Minimum gap between two [submitLine]-worthy Enter signals required to treat them as separate
  * key presses, rather than the same physical press being reported twice (see the comment on
- * `submitLine` in [TerminalScreen]).
+ * `submitLine` in [TerminalScreen]). This has to balance two failure modes: too large a window
+ * risks swallowing a genuinely separate, fast Enter press (e.g. a user quickly tapping Enter
+ * twice to leave a blank line); too small a window risks not catching a real duplicate. The
+ * redundant signals for one physical press (raw key event, IME send action, trailing "\n") are
+ * always delivered within the same input-processing pass, at most a few milliseconds apart, while
+ * even a fast deliberate double press is reliably tens of milliseconds apart - so a short window
+ * comfortably separates the two cases.
  */
-private const val SUBMIT_DEDUPE_WINDOW_MILLIS = 200L
+private const val SUBMIT_DEDUPE_WINDOW_MILLIS = 60L
 
 /** Returns whether a submit at [nowMillis] is a duplicate of the one that last ran at [lastSubmitAtMillis]. */
 internal fun isDuplicateSubmit(lastSubmitAtMillis: Long, nowMillis: Long): Boolean =
