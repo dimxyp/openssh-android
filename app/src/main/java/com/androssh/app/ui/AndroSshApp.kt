@@ -720,7 +720,13 @@ private fun TerminalScreen(
                 // sent to the shell), not `input.text`: while composing, `input.text` has
                 // already been mutated to mirror the not-yet-committed preview, so comparing
                 // against it would never detect a change once the composition finally commits.
-                if (newValue.composition == null && newValue.text != streamedText) pushUndo(input)
+                // For the same reason, the pushed snapshot itself is rebuilt from `streamedText`
+                // rather than the raw (possibly still-previewing) `input`, so undoing always
+                // reverts to the last state that was actually committed/streamed, never to an
+                // intermediate composing preview the user never deliberately typed.
+                if (newValue.composition == null && newValue.text != streamedText) {
+                    pushUndo(TextFieldValue(text = streamedText, selection = TextRange(streamedText.length)))
+                }
                 applyInput(newValue)
             },
             keyboardOptions = KeyboardOptions(
