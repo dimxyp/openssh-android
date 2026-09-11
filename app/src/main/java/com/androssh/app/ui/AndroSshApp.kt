@@ -1,6 +1,7 @@
 package com.androssh.app.ui
 
 import android.app.Activity
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -507,7 +508,10 @@ private fun TerminalScreen(
      * most), while genuinely separate Enter presses are always further apart than that.
      */
     fun submitLine() {
-        val now = System.currentTimeMillis()
+        // elapsedRealtime() (monotonic, unaffected by wall-clock/NTP adjustments) is used instead
+        // of System.currentTimeMillis() so a clock change can never mask or falsely trigger the
+        // dedupe guard below.
+        val now = SystemClock.elapsedRealtime()
         if (isDuplicateSubmit(lastSubmitAtMillis, now)) return
         lastSubmitAtMillis = now
         onSend("\r")
@@ -700,7 +704,11 @@ private fun TerminalScreen(
         BasicTextField(
             value = input,
             onValueChange = { newValue ->
-                if (newValue.text != input.text) pushUndo(input)
+                // Skip while composing (see the guard in applyInput): every intermediate
+                // candidate update during an in-progress IME composition would otherwise push
+                // its own undo entry, spamming the undo stack with states the user never
+                // deliberately typed.
+                if (newValue.composition == null && newValue.text != input.text) pushUndo(input)
                 applyInput(newValue)
             },
             keyboardOptions = KeyboardOptions(
