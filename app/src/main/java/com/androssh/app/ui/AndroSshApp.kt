@@ -1,6 +1,7 @@
 package com.androssh.app.ui
 
 import android.app.Activity
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -388,6 +389,43 @@ private fun TextFieldValue.selectedText(): AnnotatedString {
     return AnnotatedString(text.substring(range.min, range.max))
 }
 
+/**
+ * Computes the bytes that must be streamed to the shell so it ends up displaying [newText] given
+ * it currently has [oldText] on screen. The trivial cases (no change, a pure append, or a pure
+ * trailing backspace) are streamed as the minimal keystrokes a real terminal would receive.
+ * Anything else - autocorrect swapping a whole word, a paste replacing a mid-line selection, an
+ * IME composition being committed as different text, etc. - keeps the common leading prefix
+ * intact and only backspaces/retypes the part that actually changed, rather than backspacing and
+ * retyping the entire line. This keeps the remote line buffer in sync with far fewer control
+ * bytes, and avoids "\b"-storms that some programs (e.g. those without local echo) may not
+ * handle exactly as a naive full-buffer replay assumes.
+ */
+internal fun computeInputDiff(oldText: String, newText: String): String {
+    if (newText == oldText) return ""
+    if (newText.startsWith(oldText)) return newText.substring(oldText.length)
+    if (oldText.startsWith(newText)) return "\b".repeat(oldText.length - newText.length)
+    val commonPrefixLength = oldText.commonPrefixWith(newText).length
+    val backspaces = oldText.length - commonPrefixLength
+    return "\b".repeat(backspaces) + newText.substring(commonPrefixLength)
+}
+
+/**
+ * Minimum gap between two [submitLine]-worthy Enter signals required to treat them as separate
+ * key presses, rather than the same physical press being reported twice (see the comment on
+ * `submitLine` in [TerminalScreen]). This has to balance two failure modes: too large a window
+ * risks swallowing a genuinely separate, fast Enter press (e.g. a user quickly tapping Enter
+ * twice to leave a blank line); too small a window risks not catching a real duplicate. The
+ * redundant signals for one physical press (raw key event, IME send action, trailing "\n") are
+ * always delivered within the same input-processing pass, at most a few milliseconds apart, while
+ * even a fast deliberate double press is reliably tens of milliseconds apart - so a short window
+ * comfortably separates the two cases.
+ */
+private const val SUBMIT_DEDUPE_WINDOW_MILLIS = 60L
+
+/** Returns whether a submit at [nowMillis] is a duplicate of the one that last ran at [lastSubmitAtMillis]. */
+internal fun isDuplicateSubmit(lastSubmitAtMillis: Long, nowMillis: Long): Boolean =
+    nowMillis - lastSubmitAtMillis < SUBMIT_DEDUPE_WINDOW_MILLIS
+
 @Composable
 private fun TerminalScreen(
     profile: HostProfile?,
@@ -397,6 +435,16 @@ private fun TerminalScreen(
     onResize: (rows: Int, cols: Int) -> Unit,
 ) {
     var input by remember { mutableStateOf(TextFieldValue()) }
+    // Tracks the text that has actually been streamed to the shell so far, which is *not*
+    // necessarily the same as `input.text`: while an IME composition is in progress, `input`
+    // mirrors the (possibly not-final) composing preview locally, but nothing is sent to the
+    // shell until the composition is committed - see the composing guard in [applyInput].
+    var streamedText by remember { mutableStateOf("") }
+    // Timestamp of the last time [submitLine] actually ran; see the dedupe guard there. Starts
+    // far enough in the past (rather than 0L) so the very first submit is never mistaken for a
+    // duplicate, even if it happens within [SUBMIT_DEDUPE_WINDOW_MILLIS] of device boot (when
+    // elapsedRealtime() is itself close to 0).
+    var lastSubmitAtMillis by remember { mutableStateOf(Long.MIN_VALUE / 2) }
     // The status overlay only shows briefly (on connect and on every tap) so it never permanently
     // covers terminal output; the tap counter restarts the hide timer.
     var overlayVisible by remember { mutableStateOf(true) }
@@ -460,19 +508,47 @@ private fun TerminalScreen(
      *
      * Do NOT re-send [input].text from here - doing so duplicates the command on the remote side
      * (typing "ls" then pressing Enter would execute "lsls").
+     *
+     * Enter/Send is reported through up to three independent paths (see the comment above the
+     * hidden [BasicTextField] below), and on some IMEs/hardware keyboards more than one of them
+     * fires for a single Enter press. Guard against that by ignoring any call that follows a
+     * successful submit within [SUBMIT_DEDUPE_WINDOW_MILLIS]: duplicate calls for the *same* key
+     * press always arrive within the same synchronous event dispatch (a few milliseconds at
+     * most), while genuinely separate Enter presses are always further apart than that.
      */
     fun submitLine() {
+        // elapsedRealtime() (monotonic, unaffected by wall-clock/NTP adjustments) is used instead
+        // of System.currentTimeMillis() so a clock change can never mask or falsely trigger the
+        // dedupe guard below.
+        val now = SystemClock.elapsedRealtime()
+        if (isDuplicateSubmit(lastSubmitAtMillis, now)) return
+        lastSubmitAtMillis = now
         onSend("\r")
-        pushUndo(input)
+        // Build the undo snapshot from `streamedText`, not the raw `input`: if Enter arrives via
+        // onKeyEvent/KeyboardActions.onSend while an IME composition is still in progress, `input`
+        // may still hold an uncommitted composing preview (see the guard in applyInput), and undo
+        // must never revert to that stale preview instead of the last text actually streamed.
+        pushUndo(TextFieldValue(text = streamedText, selection = TextRange(streamedText.length)))
         input = TextFieldValue()
+        streamedText = ""
     }
 
     /**
      * Applies [newValue] as the new hidden-input-buffer state and streams whatever changed
      * straight to the shell channel, so ordinary typing/backspace/paste never needs an explicit
      * "Send" action. Appends/trailing-deletes are streamed char-by-char; anything else (e.g. a
-     * paste replacing a mid-line selection) falls back to backspacing the old text and retyping
-     * the new text, which stays correct even though it isn't the most minimal byte sequence.
+     * paste replacing a mid-line selection, or autocorrect swapping a whole word) falls back to
+     * backspacing only the part of the old text that actually differs and retyping the new
+     * suffix (see [computeInputDiff]), instead of nuking and retyping the entire buffer.
+     *
+     * While the IME is still composing text (e.g. Gboard underlining a candidate word before the
+     * user accepts or the word is auto-finalized), [TextFieldValue.composition] is non-null and
+     * `newValue` is only a preview - it can change or be replaced several times before the word
+     * is committed. Diffing against previews would stream partial/backspaced bytes to the shell
+     * that get invalidated moments later, which is a common source of stray characters appearing
+     * mid-word. So while composing, only the local buffer is updated for on-screen display; the
+     * diff against [streamedText] is computed and sent once the composition is committed
+     * (`newValue.composition == null`).
      *
      * A trailing "\n" here means some IME inserted a literal newline instead of going through
      * [Modifier.onKeyEvent]/[KeyboardActions.onSend]. The text before the newline is streamed
@@ -480,18 +556,15 @@ private fun TerminalScreen(
      * handled in any form.
      */
     fun applyInput(newValue: TextFieldValue) {
-        val oldText = input.text
+        if (newValue.composition != null) {
+            input = newValue
+            return
+        }
         val submitting = newValue.text.endsWith("\n")
         val newText = if (submitting) newValue.text.removeSuffix("\n") else newValue.text
-        when {
-            newText == oldText -> Unit
-            newText.startsWith(oldText) -> onSend(newText.substring(oldText.length))
-            oldText.startsWith(newText) -> onSend("\b".repeat(oldText.length - newText.length))
-            else -> {
-                onSend("\b".repeat(oldText.length))
-                onSend(newText)
-            }
-        }
+        val diff = computeInputDiff(streamedText, newText)
+        if (diff.isNotEmpty()) onSend(diff)
+        streamedText = newText
         if (submitting) {
             input = newValue.copy(text = newText)
             submitLine()
@@ -625,21 +698,46 @@ private fun TerminalScreen(
         // on-screen keyboard's input events so regular typing can be streamed live (see
         // [applyInput]) instead of requiring a separate visible "command line" + Send button.
         //
+        // autoCorrectEnabled = false and keyboardType = Ascii disable IME autocorrect/predictive
+        // word suggestions: those replace whole words after the fact, which is the main trigger
+        // for the non-trivial diff branch in [computeInputDiff] and for confusing composing-state
+        // updates (see [applyInput]).
+        //
         // Enter/Send is handled in three redundant ways because different IMEs/hardware keyboards
         // disagree on how they signal "the user pressed Enter":
         //  1. Modifier.onKeyEvent intercepts the raw Enter/NumPadEnter key down event before the
         //     text field can insert a newline into the buffer.
         //  2. KeyboardActions.onSend fires when the IME action button (imeAction = Send) is tapped.
         //  3. applyInput() recognizes a literal trailing "\n" that slipped through both.
-        // All three converge on submitLine(), which only sends "\r" and clears the buffer - the
-        // command characters themselves were already streamed while typing.
+        // On some IMEs/hardware keyboards more than one of these fires for the *same* Enter
+        // press, so all three converge on submitLine(), which is itself guarded to ignore a
+        // second call that immediately follows a successful submit (see the dedupe guard in
+        // submitLine's doc comment) - only the first one actually sends "\r" and clears the
+        // buffer. The command characters themselves were already streamed while typing.
         BasicTextField(
             value = input,
             onValueChange = { newValue ->
-                if (newValue.text != input.text) pushUndo(input)
+                // Skip while composing (see the guard in applyInput): every intermediate
+                // candidate update during an in-progress IME composition would otherwise push
+                // its own undo entry, spamming the undo stack with states the user never
+                // deliberately typed. Compare against `streamedText` (the text last actually
+                // sent to the shell), not `input.text`: while composing, `input.text` has
+                // already been mutated to mirror the not-yet-committed preview, so comparing
+                // against it would never detect a change once the composition finally commits.
+                // For the same reason, the pushed snapshot itself is rebuilt from `streamedText`
+                // rather than the raw (possibly still-previewing) `input`, so undoing always
+                // reverts to the last state that was actually committed/streamed, never to an
+                // intermediate composing preview the user never deliberately typed.
+                if (newValue.composition == null && newValue.text != streamedText) {
+                    pushUndo(TextFieldValue(text = streamedText, selection = TextRange(streamedText.length)))
+                }
                 applyInput(newValue)
             },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Send,
+                keyboardType = KeyboardType.Ascii,
+                autoCorrectEnabled = false,
+            ),
             keyboardActions = KeyboardActions(
                 onSend = { submitLine() },
             ),
