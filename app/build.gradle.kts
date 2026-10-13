@@ -77,3 +77,10 @@ dependencies {
     ksp(libs.androidx.room.compiler)
     testImplementation(libs.junit)
 }
+
+// Android modules have no JVM-style `testClasses` task; provide one so tooling that calls it works.
+tasks.register("testClasses") {
+    group = "verification"
+    description = "Compiles the debug unit tests."
+    dependsOn("compileDebugUnitTestKotlin")
+}
