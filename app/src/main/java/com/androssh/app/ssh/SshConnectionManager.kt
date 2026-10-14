@@ -179,13 +179,13 @@ class ActiveSshSession internal constructor(
     private val session: Session,
     private val shell: Session.Shell,
 ) : Closeable {
-    fun readOutput(scope: CoroutineScope, onOutput: (String) -> Unit): Job = scope.launch(Dispatchers.IO) {
+    fun readOutput(scope: CoroutineScope, onOutput: (ByteArray) -> Unit): Job = scope.launch(Dispatchers.IO) {
         val buffer = ByteArray(SHELL_READ_BUFFER_SIZE)
         while (isActive && !shell.isEOF) {
             val read = shell.inputStream.read(buffer)
             if (read < 0) break
             if (read > 0) {
-                onOutput(String(buffer, 0, read))
+                onOutput(buffer.copyOf(read))
             }
         }
     }
@@ -198,8 +198,8 @@ class ActiveSshSession internal constructor(
         shell.changeWindowDimensions(cols.coerceAtLeast(1), rows.coerceAtLeast(1), 0, 0)
     }
 
-    suspend fun sendInput(input: String) = withContext(Dispatchers.IO) {
-        shell.outputStream.write(input.toByteArray())
+    suspend fun sendInput(input: ByteArray) = withContext(Dispatchers.IO) {
+        shell.outputStream.write(input)
         shell.outputStream.flush()
     }
 
