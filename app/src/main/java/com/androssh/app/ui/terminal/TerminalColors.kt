@@ -19,6 +19,9 @@ object TerminalColors {
     /** Slightly lighter teal for the extra-keys bar so it reads as a separate strip. */
     val KeyBarBackground = Color(0xFF15505C)
 
+    /** Background of a sticky modifier key (CTRL/ALT) while it is armed. */
+    val KeyBarActive = Color(0xFF2E8896)
+
     /** Label color of the extra-keys bar. */
     val KeyBarForeground = Color(0xFFE8E4D8)
 }

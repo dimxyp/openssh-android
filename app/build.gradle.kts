@@ -71,6 +71,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.sshj)
     implementation(libs.slf4j.nop)
+    implementation(libs.connectbot.termlib)
     implementation(libs.bouncycastle.bcprov)
     implementation(libs.bouncycastle.bcpkix)
     implementation(libs.bouncycastle.bcutil)

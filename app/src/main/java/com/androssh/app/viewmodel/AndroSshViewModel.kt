@@ -8,7 +8,7 @@ import com.androssh.app.data.ConnectionRepository
 import com.androssh.app.data.HostProfile
 import com.androssh.app.ssh.NetworkReachabilityChecker
 import com.androssh.app.ssh.SshSessionHolder
-import com.androssh.app.terminal.TerminalSnapshot
+import org.connectbot.terminal.TerminalEmulator
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -53,7 +53,7 @@ class AndroSshViewModel(
                         // The session was closed elsewhere, e.g. via the notification action.
                         AndroSshUiState(screen = Screen.ConnectionList)
                     } else {
-                        state.copy(terminal = TerminalState(snapshot = session.snapshot))
+                        state
                     }
                 }
             }
@@ -185,7 +185,6 @@ class AndroSshViewModel(
         _uiState.value = AndroSshUiState(
             screen = Screen.Terminal,
             selectedProfile = profile,
-            terminal = TerminalState(snapshot = sessionHolder.state.value.snapshot),
         )
         // Reconnecting to the host we are already on would throw away a perfectly good shell (and
         // its scrollback), so only open a new session when this really is a different one.
@@ -206,18 +205,12 @@ class AndroSshViewModel(
     /** Looks up the saved password for a profile, e.g. to hand off to the SFTP view model. */
     fun getPasswordFor(profile: HostProfile): String? = repository.getPassword(profile.id)
 
+    /** The emulator shared with the terminal view; it lives in [SshSessionHolder] so it survives the Activity. */
+    val terminalEmulator: TerminalEmulator get() = sessionHolder.emulator
+
     /** Sends raw input straight to the shell channel, e.g. live keystrokes or [com.androssh.app.ui.terminal.ExtraKeysBar] sequences. */
     fun sendTerminalInput(input: String) {
         sessionHolder.send(input)
-    }
-
-    /**
-     * Reports the terminal size measured by the UI (viewport size / monospace glyph metrics), which
-     * resizes the emulator's screen buffer and the remote PTY. Called again whenever the visible
-     * area changes: rotation, split-screen, and the soft keyboard opening or closing.
-     */
-    fun onTerminalSizeChanged(rows: Int, cols: Int) {
-        sessionHolder.resizeTerminal(rows = rows, cols = cols)
     }
 
     /**
@@ -261,7 +254,6 @@ data class AndroSshUiState(
     val screen: Screen = Screen.ConnectionList,
     val selectedProfile: HostProfile? = null,
     val form: ConnectionFormState = ConnectionFormState(),
-    val terminal: TerminalState = TerminalState(),
     val reachability: Map<Long, ReachabilityStatus> = emptyMap(),
     val message: String? = null,
 )
@@ -303,7 +295,3 @@ data class ConnectionFormState(
         )
     }
 }
-
-data class TerminalState(
-    val snapshot: TerminalSnapshot = TerminalSnapshot(rows = emptyList(), cursorRow = 0, cursorCol = 0),
-)
