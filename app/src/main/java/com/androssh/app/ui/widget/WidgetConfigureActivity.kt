@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,7 +18,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -63,6 +71,7 @@ class WidgetConfigureActivity : ComponentActivity() {
                     WidgetConfigureScreen(
                         profiles = profiles,
                         initialSelection = existing.map { it.profileId },
+                        initialStyle = WidgetPreferences.getStyle(this, appWidgetId),
                         onSave = ::finishWithSelection,
                     )
                 }
@@ -70,7 +79,8 @@ class WidgetConfigureActivity : ComponentActivity() {
         }
     }
 
-    private fun finishWithSelection(selected: List<HostProfile>) {
+    private fun finishWithSelection(selected: List<HostProfile>, style: WidgetStyle) {
+        WidgetPreferences.saveStyle(this, appWidgetId, style)
         WidgetPreferences.savePinnedConnections(
             this,
             appWidgetId,
@@ -87,8 +97,10 @@ class WidgetConfigureActivity : ComponentActivity() {
 private fun WidgetConfigureScreen(
     profiles: List<HostProfile>,
     initialSelection: List<Long>,
-    onSave: (List<HostProfile>) -> Unit,
+    initialStyle: WidgetStyle,
+    onSave: (List<HostProfile>, WidgetStyle) -> Unit,
 ) {
+    var style by remember { mutableStateOf(initialStyle) }
     var maxCount by remember { mutableStateOf(initialSelection.size.coerceIn(1, WidgetPreferences.MAX_CONNECTIONS)) }
     var selectedIds by remember { mutableStateOf(initialSelection) }
     // Selection order is preserved so buttons appear in the order the user picked them.
@@ -118,6 +130,9 @@ private fun WidgetConfigureScreen(
             Text("No saved connections yet. Add one in AndroSSH first.")
         }
         LazyColumn(modifier = Modifier.weight(1f)) {
+            item {
+                StyleSection(style = style, onChange = { style = it })
+            }
             items(profiles, key = { it.id }) { profile ->
                 val checked = profile.id in selectedIds
                 val enabled = checked || selectedIds.size < maxCount
@@ -140,9 +155,61 @@ private fun WidgetConfigureScreen(
             }
         }
         Button(
-            onClick = { onSave(chosen) },
+            onClick = { onSave(chosen, style) },
             enabled = chosen.isNotEmpty(),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Save") }
+    }
+}
+
+private val BACKGROUND_COLORS = listOf(0x000000, 0xFFFFFF, 0x1E1E1E, 0x1565C0, 0x2E7D32, 0xC62828, 0x6A1B9A, 0xEF6C00)
+private val TEXT_COLORS = listOf(0xFFFFFF, 0x000000, 0xFFEB3B, 0x80D8FF, 0xA5D6A7, 0xFF8A80)
+
+@Composable
+private fun StyleSection(style: WidgetStyle, onChange: (WidgetStyle) -> Unit) {
+    Column(modifier = Modifier.padding(bottom = 8.dp)) {
+        Text("Background color", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
+        ColorRow(BACKGROUND_COLORS, style.backgroundRgb) { onChange(style.copy(backgroundRgb = it)) }
+        Text("Background opacity: ${style.backgroundAlphaPercent}%", style = MaterialTheme.typography.titleSmall)
+        Slider(
+            value = style.backgroundAlphaPercent.toFloat(),
+            onValueChange = { onChange(style.copy(backgroundAlphaPercent = it.toInt())) },
+            valueRange = 0f..100f,
+        )
+        Text("Text & button color", style = MaterialTheme.typography.titleSmall)
+        ColorRow(TEXT_COLORS, style.textRgb) { onChange(style.copy(textRgb = it)) }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .background(Color(style.backgroundArgb))
+                .padding(12.dp),
+        ) {
+            Text(
+                "Preview: AndroSSH",
+                color = Color(style.textArgb),
+                modifier = Modifier.background(Color(style.buttonArgb)).padding(8.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ColorRow(colors: List<Int>, selected: Int, onPick: (Int) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(vertical = 8.dp)) {
+        colors.forEach { rgb ->
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF000000.toInt() or rgb))
+                    .border(
+                        width = if (rgb == selected) 3.dp else 1.dp,
+                        color = if (rgb == selected) MaterialTheme.colorScheme.primary else Color.Gray,
+                        shape = CircleShape,
+                    )
+                    .clickable { onPick(rgb) },
+            )
+        }
     }
 }

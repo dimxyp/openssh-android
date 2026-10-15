@@ -35,6 +35,10 @@ class AndroSshWidgetProvider : AppWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.widget_androssh)
 
             views.setViewVisibility(R.id.widget_empty, if (connections.isEmpty()) View.VISIBLE else View.GONE)
+            val style = WidgetPreferences.getStyle(context, widgetId)
+            views.setInt(R.id.widget_root, "setBackgroundColor", style.backgroundArgb)
+            views.setTextColor(R.id.widget_title, style.textArgb)
+            views.setTextColor(R.id.widget_empty, style.textArgb)
 
             BUTTON_IDS.forEachIndexed { index, buttonId ->
                 val connection = connections.getOrNull(index)
@@ -44,6 +48,8 @@ class AndroSshWidgetProvider : AppWidgetProvider() {
                 }
                 views.setViewVisibility(buttonId, View.VISIBLE)
                 views.setTextViewText(buttonId, connection.name)
+                views.setTextColor(buttonId, style.textArgb)
+                views.setInt(buttonId, "setBackgroundColor", style.buttonArgb)
                 val launchIntent = Intent(context, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
                     putExtra(MainActivity.EXTRA_PROFILE_ID, connection.profileId)

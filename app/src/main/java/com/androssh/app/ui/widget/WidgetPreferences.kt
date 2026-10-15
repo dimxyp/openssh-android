@@ -11,6 +11,18 @@ data class PinnedConnection(
     val host: String,
 )
 
+/** Per-widget appearance: RGB colors (no alpha) plus background opacity in percent. */
+data class WidgetStyle(
+    val backgroundRgb: Int = 0x000000,
+    val backgroundAlphaPercent: Int = 70,
+    val textRgb: Int = 0xFFFFFF,
+) {
+    val backgroundArgb: Int get() = (backgroundAlphaPercent * 255 / 100 shl 24) or backgroundRgb
+    /** Button fill: a faint tint of the text color so buttons stand out from the background. */
+    val buttonArgb: Int get() = (0x33 shl 24) or textRgb
+    val textArgb: Int get() = (0xFF shl 24) or textRgb
+}
+
 /**
  * Persists which saved connections are shown on which widget instance.
  * `AppWidgetProvider`/its configuration `Activity` run without direct access
@@ -34,8 +46,31 @@ object WidgetPreferences {
         return raw.split(RECORD_SEPARATOR).filter { it.isNotEmpty() }.mapNotNull { decode(it) }
     }
 
+    fun saveStyle(context: Context, widgetId: Int, style: WidgetStyle) {
+        prefs(context).edit {
+            putInt("bg_$widgetId", style.backgroundRgb)
+            putInt("alpha_$widgetId", style.backgroundAlphaPercent)
+            putInt("text_$widgetId", style.textRgb)
+        }
+    }
+
+    fun getStyle(context: Context, widgetId: Int): WidgetStyle {
+        val p = prefs(context)
+        val d = WidgetStyle()
+        return WidgetStyle(
+            backgroundRgb = p.getInt("bg_$widgetId", d.backgroundRgb),
+            backgroundAlphaPercent = p.getInt("alpha_$widgetId", d.backgroundAlphaPercent).coerceIn(0, 100),
+            textRgb = p.getInt("text_$widgetId", d.textRgb),
+        )
+    }
+
     fun clear(context: Context, widgetId: Int) {
-        prefs(context).edit { remove(key(widgetId)) }
+        prefs(context).edit {
+            remove(key(widgetId))
+            remove("bg_$widgetId")
+            remove("alpha_$widgetId")
+            remove("text_$widgetId")
+        }
     }
 
     private fun encode(connection: PinnedConnection): String =
