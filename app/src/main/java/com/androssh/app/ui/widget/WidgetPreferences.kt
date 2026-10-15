@@ -3,7 +3,7 @@ package com.androssh.app.ui.widget
 import android.content.Context
 import androidx.core.content.edit
 
-/** A saved connection pinned to a specific home-screen widget instance. */
+/** A saved connection shown as a button on a specific home-screen widget instance. */
 data class PinnedConnection(
     val profileId: Long,
     val name: String,
@@ -12,7 +12,7 @@ data class PinnedConnection(
 )
 
 /**
- * Persists which saved connection is pinned to which widget instance.
+ * Persists which saved connections are shown on which widget instance.
  * `AppWidgetProvider`/its configuration `Activity` run without direct access
  * to the app's Room database in a simple, synchronous way, so a small
  * dedicated `SharedPreferences` file is used instead - it only stores
@@ -21,15 +21,17 @@ data class PinnedConnection(
 object WidgetPreferences {
     private const val PREFS_NAME = "androssh_widget_prefs"
 
-    fun savePinnedConnection(context: Context, widgetId: Int, connection: PinnedConnection) {
+    const val MAX_CONNECTIONS = 6
+
+    fun savePinnedConnections(context: Context, widgetId: Int, connections: List<PinnedConnection>) {
         prefs(context).edit {
-            putString(key(widgetId), encode(connection))
+            putString(key(widgetId), connections.take(MAX_CONNECTIONS).joinToString(RECORD_SEPARATOR) { encode(it) })
         }
     }
 
-    fun getPinnedConnection(context: Context, widgetId: Int): PinnedConnection? {
-        val raw = prefs(context).getString(key(widgetId), null) ?: return null
-        return decode(raw)
+    fun getPinnedConnections(context: Context, widgetId: Int): List<PinnedConnection> {
+        val raw = prefs(context).getString(key(widgetId), null) ?: return emptyList()
+        return raw.split(RECORD_SEPARATOR).filter { it.isNotEmpty() }.mapNotNull { decode(it) }
     }
 
     fun clear(context: Context, widgetId: Int) {
@@ -38,7 +40,7 @@ object WidgetPreferences {
 
     private fun encode(connection: PinnedConnection): String =
         listOf(connection.profileId.toString(), connection.name, connection.username, connection.host)
-            .joinToString(FIELD_SEPARATOR) { it.replace(FIELD_SEPARATOR, " ") }
+            .joinToString(FIELD_SEPARATOR) { it.replace(FIELD_SEPARATOR, " ").replace(RECORD_SEPARATOR, " ") }
 
     private fun decode(raw: String): PinnedConnection? {
         val parts = raw.split(FIELD_SEPARATOR, limit = 4)
@@ -53,4 +55,5 @@ object WidgetPreferences {
     private fun key(widgetId: Int) = "widget_$widgetId"
 
     private const val FIELD_SEPARATOR = "\u0001"
+    private const val RECORD_SEPARATOR = "\u0002"
 }

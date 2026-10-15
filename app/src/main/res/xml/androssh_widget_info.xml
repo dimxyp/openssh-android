@@ -8,5 +8,6 @@
     android:initialLayout="@layout/widget_androssh"
     android:configure="com.androssh.app.ui.widget.WidgetConfigureActivity"
     android:resizeMode="horizontal|vertical"
+    android:widgetFeatures="reconfigurable"
     android:widgetCategory="home_screen"
     android:description="@string/widget_description" />

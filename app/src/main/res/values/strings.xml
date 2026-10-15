@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">AndroSSH</string>
     <string name="widget_default_title">AndroSSH</string>
-    <string name="widget_tap_to_configure">Tap to choose a connection</string>
+    <string name="widget_tap_to_configure">Tap to choose connections</string>
     <string name="widget_description">Quick-connect to a saved SSH server</string>
     <string name="ssh_session_channel_name">SSH session</string>
     <string name="ssh_session_channel_description">Ongoing notification shown while an SSH session is open</string>
