@@ -107,7 +107,7 @@ class SshForegroundService : Service() {
             getString(R.string.ssh_session_notification_running, label)
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setSmallIcon(R.drawable.ic_stat_terminal)
             .setContentTitle(title)
             .setContentIntent(contentIntent)
             // Renders the ticking "N minutes" elapsed time seen in the shade.
