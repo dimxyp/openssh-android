@@ -32,7 +32,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material3.Button
+import com.androssh.app.ui.theme.AndroSshTheme
+import com.androssh.app.ui.theme.Button
+import com.androssh.app.ui.theme.OutlinedButton
+import com.androssh.app.ui.theme.TextButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,12 +44,10 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -61,6 +62,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
@@ -101,7 +103,7 @@ fun AndroSshApp(
         viewModel.monitorReachability(profiles, uiState.screen == Screen.ConnectionList)
     }
 
-    MaterialTheme {
+    AndroSshTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             Scaffold { padding ->
                 // The terminal screen drops the app title and outer padding so the grid and the
@@ -140,7 +142,20 @@ fun AndroSshApp(
                         ) {
                             Text(text = "AndroSSH", style = MaterialTheme.typography.headlineMedium)
                             if (uiState.screen == Screen.ConnectionList) {
-                                TextButton(onClick = viewModel::openBackup) { Text("Backup") }
+                                val context = LocalContext.current
+                                val versionName = remember {
+                                    runCatching {
+                                        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                                    }.getOrNull().orEmpty()
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "v$versionName",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    TextButton(onClick = viewModel::openBackup) { Text("Backup") }
+                                }
                             }
                         }
                     }

@@ -14,7 +14,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
+import com.androssh.app.ui.theme.AndroSshTheme
+import com.androssh.app.ui.theme.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -66,7 +67,7 @@ class WidgetConfigureActivity : ComponentActivity() {
         val repository = (application as AndroSshApplication).container.connectionRepository
         setContent {
             val profiles by repository.observeProfiles().collectAsState(initial = emptyList())
-            MaterialTheme {
+            AndroSshTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     WidgetConfigureScreen(
                         profiles = profiles,
