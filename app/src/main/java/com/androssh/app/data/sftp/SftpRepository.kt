@@ -24,6 +24,7 @@ data class SftpEntry(
 data class TransferProgress(
     val bytesTransferred: Long,
     val totalBytes: Long,
+    val bytesPerSecond: Long = 0,
 ) {
     val percent: Int
         get() = if (totalBytes <= 0) 0 else ((bytesTransferred * 100) / totalBytes).toInt()
@@ -44,6 +45,11 @@ class SftpRepository(
 ) {
     suspend fun connect(profile: HostProfile, password: String?): SftpSession =
         sshConnectionManager.openSftp(profile, password)
+
+    /** Resolves the login directory (home); chrooted servers such as Synology often deny listing "/". */
+    suspend fun homeDirectory(session: SftpSession): String = withContext(Dispatchers.IO) {
+        runCatching { session.sftpClient.canonicalize(".") }.getOrNull()?.takeIf { it.isNotBlank() } ?: "/"
+    }
 
     suspend fun list(session: SftpSession, path: String): List<SftpEntry> = withContext(Dispatchers.IO) {
         session.sftpClient.ls(path)

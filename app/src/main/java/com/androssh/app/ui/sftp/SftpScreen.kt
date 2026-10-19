@@ -188,18 +188,39 @@ fun SftpScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("${progress.percent}%", style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            if (progress.totalBytes > 0) {
+                                "${progress.percent}% - ${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}" +
+                                    if (progress.bytesPerSecond > 0) " - ${formatSize(progress.bytesPerSecond)}/s" else ""
+                            } else {
+                                formatSize(progress.bytesTransferred)
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                        )
                         Spacer(Modifier.weight(1f))
                         TextButton(onClick = viewModel::cancelTransfer) { Text("Cancel") }
                     }
                 }
             }
             uiState.message?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
-                )
+                Row(
+                    modifier = Modifier.padding(start = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (it.contains("failed", ignoreCase = true)) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = viewModel::dismissMessage) {
+                        Icon(Icons.Default.Close, contentDescription = "Dismiss")
+                    }
+                }
             }
             remote.error?.let {
                 Text(
