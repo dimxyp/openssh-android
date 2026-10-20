@@ -52,6 +52,8 @@ class SftpViewModel(
     private var secondarySession: SftpSession? = null
     private var transferJob: Job? = null
     @Volatile private var transferCancelled: Boolean = false
+    @Volatile private var transferStartMs = 0L
+    @Volatile private var lastPublishMs = 0L
 
     fun connect(profile: HostProfile, password: String?) {
         _uiState.update { it.copy(remote = SftpPaneState(profile = profile, isLoading = true)) }
@@ -59,7 +61,7 @@ class SftpViewModel(
             runCatching {
                 closeRemoteSession()
                 remoteSession = repository.connect(profile, password)
-                refreshRemote("/")
+                refreshRemote(repository.homeDirectory(remoteSession!!))
             }.onFailure { error ->
                 _uiState.update {
                     it.copy(remote = it.remote.copy(isLoading = false, error = error.message))
@@ -179,22 +181,44 @@ class SftpViewModel(
 
     private fun isTransferCancelled(): Boolean = transferCancelled
 
+    fun dismissMessage() {
+        _uiState.update { it.copy(message = null) }
+    }
+
+    // Transfers run one after another so multi-file downloads do not cancel each other.
     private fun startTransfer(label: String, block: suspend () -> Unit) {
-        transferJob?.cancel()
-        transferCancelled = false
-        _uiState.update { it.copy(transferLabel = label, transfer = TransferProgress(0, 0)) }
+        val previous = transferJob
         transferJob = viewModelScope.launch {
+            previous?.join()
+            transferCancelled = false
+            transferStartMs = System.currentTimeMillis()
+            lastPublishMs = 0L
+            _uiState.update { it.copy(transferLabel = label, transfer = TransferProgress(0, 0), message = null) }
             runCatching { block() }
                 .onSuccess { _uiState.update { it.copy(transfer = null, transferLabel = null) } }
                 .onFailure { error ->
-                    val message = if (error is TransferCancelledException) "Transfer cancelled" else "Transfer failed: ${error.message}"
+                    val message = when (error) {
+                        is TransferCancelledException -> "Transfer cancelled"
+                        else -> "Transfer failed: ${rootCauseMessage(error)}"
+                    }
                     _uiState.update { it.copy(transfer = null, transferLabel = null, message = message) }
                 }
         }
     }
 
+    private fun rootCauseMessage(error: Throwable): String {
+        var cause: Throwable = error
+        while (cause.cause != null && cause.cause !== cause) cause = cause.cause!!
+        return cause.message ?: error.message ?: error.javaClass.simpleName
+    }
+
     private fun publishProgress(progress: TransferProgress) {
-        _uiState.update { it.copy(transfer = progress) }
+        val now = System.currentTimeMillis()
+        val done = progress.totalBytes > 0 && progress.bytesTransferred >= progress.totalBytes
+        if (!done && now - lastPublishMs < 100) return
+        lastPublishMs = now
+        val elapsed = (now - transferStartMs).coerceAtLeast(1)
+        _uiState.update { it.copy(transfer = progress.copy(bytesPerSecond = progress.bytesTransferred * 1000 / elapsed)) }
     }
 
     private fun joinPath(directory: String, name: String): String {
