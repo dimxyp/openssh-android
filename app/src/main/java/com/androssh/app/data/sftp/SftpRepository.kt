@@ -79,7 +79,7 @@ class SftpRepository(
         onProgress: (TransferProgress) -> Unit,
     ) = withContext(Dispatchers.IO) {
         session.sftpClient.open(remotePath, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { remoteFile ->
-            remoteFile.RemoteFileOutputStream().use { output ->
+            remoteFile.RemoteFileOutputStream(0, 16).use { output ->
                 copyWithProgress(input, output, totalBytes, isCancelled, onProgress)
             }
         }
@@ -94,7 +94,7 @@ class SftpRepository(
         onProgress: (TransferProgress) -> Unit,
     ) = withContext(Dispatchers.IO) {
         session.sftpClient.open(entry.path, EnumSet.of(OpenMode.READ)).use { remoteFile ->
-            remoteFile.RemoteFileInputStream().use { input ->
+            remoteFile.ReadAheadRemoteFileInputStream(16).use { input ->
                 copyWithProgress(input, output, entry.size, isCancelled, onProgress)
             }
         }
@@ -121,8 +121,8 @@ class SftpRepository(
                 destinationPath,
                 EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC),
             ).use { destinationFile ->
-                sourceFile.RemoteFileInputStream().use { input ->
-                    destinationFile.RemoteFileOutputStream().use { output ->
+                sourceFile.ReadAheadRemoteFileInputStream(16).use { input ->
+                    destinationFile.RemoteFileOutputStream(0, 16).use { output ->
                         copyWithProgress(input, output, sourceEntry.size, isCancelled, onProgress)
                     }
                 }
