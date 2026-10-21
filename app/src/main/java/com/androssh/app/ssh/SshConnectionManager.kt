@@ -76,7 +76,10 @@ class SshConnectionManager(
 
         val client = SSHClient()
         client.addHostKeyVerifier(AppKnownHostsVerifier(knownHostsFile, knownHostsLock))
+        client.connectTimeout = 15_000
         client.connect(profile.host, profile.port)
+        // Keep NAT/mobile networks from silently dropping an idle connection.
+        client.connection.keepAlive.keepAliveInterval = 15
         val passwordFinder = object : PasswordFinder {
             override fun reqPassword(resource: Resource<*>): CharArray = password.toCharArray()
 
@@ -224,6 +227,8 @@ class SftpSession internal constructor(
     private val client: SSHClient,
     val sftpClient: SFTPClient,
 ) : Closeable {
+    val isAlive: Boolean get() = client.isConnected && client.isAuthenticated
+
     override fun close() {
         runCatching { sftpClient.close() }
         runCatching { client.disconnect() }

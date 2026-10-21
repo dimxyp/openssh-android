@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** One side of the dual-pane SFTP browser: either "local" or a connected remote server. */
 data class SftpPaneState(
@@ -50,18 +52,23 @@ class SftpViewModel(
 
     private var remoteSession: SftpSession? = null
     private var secondarySession: SftpSession? = null
+    private var lastProfile: HostProfile? = null
+    private var lastPassword: String? = null
+    private val sessionLock = Mutex()
     private var transferJob: Job? = null
     @Volatile private var transferCancelled: Boolean = false
     @Volatile private var transferStartMs = 0L
     @Volatile private var lastPublishMs = 0L
 
     fun connect(profile: HostProfile, password: String?) {
+        lastProfile = profile
+        lastPassword = password
         _uiState.update { it.copy(remote = SftpPaneState(profile = profile, isLoading = true)) }
         viewModelScope.launch {
             runCatching {
                 closeRemoteSession()
-                remoteSession = repository.connect(profile, password)
-                refreshRemote(repository.homeDirectory(remoteSession!!))
+                val session = ensureSession()
+                refreshRemote(repository.homeDirectory(session))
             }.onFailure { error ->
                 _uiState.update {
                     it.copy(remote = it.remote.copy(isLoading = false, error = error.message))
@@ -71,10 +78,10 @@ class SftpViewModel(
     }
 
     fun refreshRemote(path: String = uiState.value.remote.currentPath) {
-        val session = remoteSession ?: return
+        if (lastProfile == null) return
         _uiState.update { it.copy(remote = it.remote.copy(isLoading = true, error = null)) }
         viewModelScope.launch {
-            runCatching { repository.list(session, path) }
+            runCatching { withReconnect { repository.list(it, path) } }
                 .onSuccess { entries ->
                     _uiState.update {
                         it.copy(remote = it.remote.copy(currentPath = path, entries = entries, isLoading = false))
@@ -100,29 +107,26 @@ class SftpViewModel(
     }
 
     fun makeRemoteDirectory(name: String) {
-        val session = remoteSession ?: return
         val path = joinPath(uiState.value.remote.currentPath, name)
         viewModelScope.launch {
-            runCatching { repository.mkdir(session, path) }
+            runCatching { withReconnect { repository.mkdir(it, path) } }
                 .onSuccess { refreshRemote() }
                 .onFailure { error -> _uiState.update { it.copy(message = "Create folder failed: ${error.message}") } }
         }
     }
 
     fun deleteRemote(entry: SftpEntry) {
-        val session = remoteSession ?: return
         viewModelScope.launch {
-            runCatching { repository.delete(session, entry) }
+            runCatching { withReconnect { repository.delete(it, entry) } }
                 .onSuccess { refreshRemote() }
                 .onFailure { error -> _uiState.update { it.copy(message = "Delete failed: ${error.message}") } }
         }
     }
 
     fun renameRemote(entry: SftpEntry, newName: String) {
-        val session = remoteSession ?: return
         val newPath = joinPath(uiState.value.remote.currentPath, newName)
         viewModelScope.launch {
-            runCatching { repository.rename(session, entry.path, newPath) }
+            runCatching { withReconnect { repository.rename(it, entry.path, newPath) } }
                 .onSuccess { refreshRemote() }
                 .onFailure { error -> _uiState.update { it.copy(message = "Rename failed: ${error.message}") } }
         }
@@ -130,9 +134,9 @@ class SftpViewModel(
 
     /** Uploads a locally-picked file (device -> server). */
     fun upload(fileName: String, size: Long, input: () -> InputStream) {
-        val session = remoteSession ?: return
         val remotePath = joinPath(uiState.value.remote.currentPath, fileName)
         startTransfer("Uploading $fileName") {
+            val session = ensureSession()
             input().use { stream ->
                 repository.upload(session, stream, remotePath, size, ::isTransferCancelled) { progress ->
                     publishProgress(progress)
@@ -144,8 +148,8 @@ class SftpViewModel(
 
     /** Downloads the selected remote file (server -> device) into a caller-provided sink. */
     fun download(entry: SftpEntry, output: () -> OutputStream) {
-        val session = remoteSession ?: return
         startTransfer("Downloading ${entry.name}") {
+            val session = ensureSession()
             output().use { stream ->
                 repository.download(session, entry, stream, ::isTransferCancelled) { progress ->
                     publishProgress(progress)
@@ -160,8 +164,8 @@ class SftpViewModel(
      * server-to-server copy.
      */
     fun transferToOtherServer(entry: SftpEntry, destinationProfile: HostProfile, destinationPassword: String?, destinationPath: String) {
-        val source = remoteSession ?: return
         startTransfer("Transferring ${entry.name} via device") {
+            val source = ensureSession()
             val destination = repository.connect(destinationProfile, destinationPassword)
             secondarySession = destination
             try {
@@ -224,6 +228,25 @@ class SftpViewModel(
     private fun joinPath(directory: String, name: String): String {
         val base = if (directory.endsWith("/")) directory else "$directory/"
         return "$base$name"
+    }
+
+    /** Returns a live session, transparently reconnecting if the old one was dropped. */
+    private suspend fun ensureSession(): SftpSession = sessionLock.withLock {
+        remoteSession?.takeIf { it.isAlive }?.let { return it }
+        val profile = lastProfile ?: error("Not connected")
+        closeRemoteSession()
+        repository.connect(profile, lastPassword).also { remoteSession = it }
+    }
+
+    private suspend fun <T> withReconnect(block: suspend (SftpSession) -> T): T {
+        val session = ensureSession()
+        return try {
+            block(session)
+        } catch (e: java.io.IOException) {
+            // Typically "Software caused connection abort": drop the dead session and retry once.
+            sessionLock.withLock { if (remoteSession === session) closeRemoteSession() }
+            block(ensureSession())
+        }
     }
 
     private fun closeRemoteSession() {
